@@ -1,21 +1,13 @@
-import subprocess
-import sys
+from datetime import datetime
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from sqlalchemy import func, extract
-from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult
 from src.backtester.engine import run_all_strategies
-from src.backtester.metrics import (
-    compute_strategy_metrics,
-    compute_category_metrics,
-    compute_time_period_metrics,
-)
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 
@@ -61,6 +53,16 @@ if min_date and max_date:
 else:
     date_range = None
 
+
+def _apply_date_filter(query, date_col):
+    """Apply the sidebar date range filter to a query."""
+    if date_range and len(date_range) == 2:
+        start, end = date_range
+        query = query.filter(date_col >= datetime(start.year, start.month, start.day))
+        query = query.filter(date_col <= datetime(end.year, end.month, end.day, 23, 59, 59))
+    return query
+
+
 # Strategy filter
 all_strategies = [
     row[0]
@@ -97,18 +99,14 @@ view = st.sidebar.radio(
 def render_thesis_overview():
     st.header("Thesis Overview: Does Nothing Ever Happen?")
 
-    total_markets = (
-        session.query(Market)
-        .filter(Market.resolution.isnot(None))
-        .filter(Market.category.in_(selected_categories))
-        .count()
+    base_q = session.query(Market).filter(
+        Market.resolution.isnot(None),
+        Market.category.in_(selected_categories),
     )
-    no_count = (
-        session.query(Market)
-        .filter(Market.resolution == "No")
-        .filter(Market.category.in_(selected_categories))
-        .count()
-    )
+    base_q = _apply_date_filter(base_q, Market.created_at)
+
+    total_markets = base_q.count()
+    no_count = base_q.filter(Market.resolution == "No").count()
     yes_count = total_markets - no_count
     no_rate = no_count / total_markets if total_markets > 0 else 0
 
@@ -121,12 +119,12 @@ def render_thesis_overview():
     # Category breakdown
     cat_data = []
     for cat in selected_categories:
-        cat_total = session.query(Market).filter(
+        cat_q = session.query(Market).filter(
             Market.resolution.isnot(None), Market.category == cat
-        ).count()
-        cat_no = session.query(Market).filter(
-            Market.resolution == "No", Market.category == cat
-        ).count()
+        )
+        cat_q = _apply_date_filter(cat_q, Market.created_at)
+        cat_total = cat_q.count()
+        cat_no = cat_q.filter(Market.resolution == "No").count()
         if cat_total > 0:
             cat_data.append({
                 "Category": cat,
@@ -158,12 +156,13 @@ def render_strategy_comparison():
         return
 
     # Get all run_ids and their strategies
-    all_results = (
+    results_q = (
         session.query(BacktestResult)
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
-        .all()
     )
+    results_q = _apply_date_filter(results_q, BacktestResult.entry_timestamp)
+    all_results = results_q.all()
 
     if not all_results:
         st.info("No results match your filters.")
@@ -216,12 +215,13 @@ def render_deep_dive():
         st.warning("No backtest results found. Run a backtest first.")
         return
 
-    results = (
+    dive_q = (
         session.query(BacktestResult)
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
-        .all()
     )
+    dive_q = _apply_date_filter(dive_q, BacktestResult.entry_timestamp)
+    results = dive_q.all()
 
     if not results:
         st.info("No results match your filters.")
@@ -280,6 +280,7 @@ def render_market_browser():
         Market.resolution.isnot(None),
         Market.category.in_(selected_categories),
     )
+    query = _apply_date_filter(query, Market.created_at)
     if search:
         query = query.filter(Market.question.contains(search))
 
