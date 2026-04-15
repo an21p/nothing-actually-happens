@@ -6,7 +6,7 @@
 
 **Architecture:** Three-stage pipeline — data collector (Polymarket APIs + Polygon on-chain) writes to SQLite via SQLAlchemy, backtest engine runs strategies against stored data, Streamlit dashboard visualizes results. Each stage runs independently.
 
-**Tech Stack:** Python 3.11+, SQLAlchemy 2.0, httpx, web3.py, Streamlit, Plotly, SQLite
+**Tech Stack:** Python 3.11+, uv (package manager), SQLAlchemy 2.0, httpx, web3.py, Streamlit, Plotly, SQLite
 
 ---
 
@@ -107,6 +107,7 @@ data/*.db
 *.egg-info/
 dist/
 .venv/
+.python-version
 ```
 
 - [ ] **Step 3: Create `.env.example`**
@@ -128,10 +129,10 @@ touch data/.gitkeep
 - [ ] **Step 5: Install dependencies**
 
 ```bash
-pip install -e ".[dev]"
+uv sync --all-extras
 ```
 
-Run: `python -c "import sqlalchemy; import httpx; print('OK')"`
+Run: `uv run python -c "import sqlalchemy; import httpx; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 6: Commit**
@@ -266,7 +267,7 @@ def test_market_price_snapshots_relationship(session):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_models.py -v`
+Run: `uv run pytest tests/test_models.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.storage.models'`
 
 - [ ] **Step 3: Write `src/storage/models.py`**
@@ -381,7 +382,7 @@ def session(engine):
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `pytest tests/test_models.py -v`
+Run: `uv run pytest tests/test_models.py -v`
 Expected: 4 passed
 
 - [ ] **Step 7: Commit**
@@ -446,7 +447,7 @@ def test_case_insensitive():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_categories.py -v`
+Run: `uv run pytest tests/test_categories.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/collector/categories.py`**
@@ -510,7 +511,7 @@ def classify_market(question: str, api_category: str | None) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_categories.py -v`
+Run: `uv run pytest tests/test_categories.py -v`
 Expected: 6 passed
 
 - [ ] **Step 5: Commit**
@@ -629,7 +630,7 @@ def test_parse_market_skips_neg_risk():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_polymarket_api.py -v`
+Run: `uv run pytest tests/test_polymarket_api.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/collector/polymarket_api.py`**
@@ -756,7 +757,7 @@ def fetch_resolved_markets(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_polymarket_api.py -v`
+Run: `uv run pytest tests/test_polymarket_api.py -v`
 Expected: 7 passed
 
 - [ ] **Step 5: Commit**
@@ -825,7 +826,7 @@ def test_parse_empty_history():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_price_history.py -v`
+Run: `uv run pytest tests/test_price_history.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/collector/price_history.py`**
@@ -889,7 +890,7 @@ def fetch_price_histories_batch(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_price_history.py -v`
+Run: `uv run pytest tests/test_price_history.py -v`
 Expected: 4 passed
 
 - [ ] **Step 5: Commit**
@@ -988,7 +989,7 @@ def test_filter_events_excludes_unrelated():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_polygon_chain.py -v`
+Run: `uv run pytest tests/test_polygon_chain.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/collector/polygon_chain.py`**
@@ -1139,7 +1140,7 @@ def fetch_onchain_prices(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_polygon_chain.py -v`
+Run: `uv run pytest tests/test_polygon_chain.py -v`
 Expected: 4 passed
 
 - [ ] **Step 5: Commit**
@@ -1282,7 +1283,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Verify it runs (dry-run help)**
 
-Run: `python -m src.collector.runner --help`
+Run: `uv run python -m src.collector.runner --help`
 Expected output including `--categories`, `--limit`, `--enrich-onchain` options
 
 - [ ] **Step 3: Commit**
@@ -1409,7 +1410,7 @@ def test_best_price_empty_history():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_strategies.py -v`
+Run: `uv run pytest tests/test_strategies.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/backtester/strategies.py`**
@@ -1503,7 +1504,7 @@ STRATEGIES = {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_strategies.py -v`
+Run: `uv run pytest tests/test_strategies.py -v`
 Expected: 12 passed
 
 - [ ] **Step 5: Commit**
@@ -1657,7 +1658,7 @@ def test_run_backtest_skips_unresolved(session):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_engine.py -v`
+Run: `uv run pytest tests/test_engine.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/backtester/engine.py`**
@@ -1802,7 +1803,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_engine.py -v`
+Run: `uv run pytest tests/test_engine.py -v`
 Expected: 4 passed
 
 - [ ] **Step 5: Commit**
@@ -1922,7 +1923,7 @@ def test_time_period_metrics(session):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_metrics.py -v`
+Run: `uv run pytest tests/test_metrics.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `src/backtester/metrics.py`**
@@ -2027,7 +2028,7 @@ def _compute_group_metrics(results: list[BacktestResult], group_info: dict) -> d
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_metrics.py -v`
+Run: `uv run pytest tests/test_metrics.py -v`
 Expected: 3 passed
 
 - [ ] **Step 5: Commit**
@@ -2425,7 +2426,7 @@ session.close()
 
 - [ ] **Step 2: Run the dashboard**
 
-Run: `streamlit run src/dashboard/app.py`
+Run: `uv run streamlit run src/dashboard/app.py`
 
 Verify:
 - App loads without errors
@@ -2446,24 +2447,24 @@ git commit -m "feat: add Streamlit dashboard with all four views"
 
 - [ ] **Step 1: Run full test suite**
 
-Run: `pytest tests/ -v`
+Run: `uv run pytest tests/ -v`
 Expected: All tests pass (27 tests total across 7 test files)
 
 - [ ] **Step 2: Test collection with a small batch**
 
-Run: `python -m src.collector.runner --categories geopolitical,political,culture --limit 10`
+Run: `uv run python -m src.collector.runner --categories geopolitical,political,culture --limit 10`
 
 Verify: Output shows fetching markets and storing data. Check that `data/polymarket.db` is created.
 
 - [ ] **Step 3: Run backtests on collected data**
 
-Run: `python -m src.backtester.engine`
+Run: `uv run python -m src.backtester.engine`
 
 Verify: Output shows backtest runs completing.
 
 - [ ] **Step 4: Launch dashboard and verify with real data**
 
-Run: `streamlit run src/dashboard/app.py`
+Run: `uv run streamlit run src/dashboard/app.py`
 
 Verify:
 - Thesis Overview shows resolution stats and category bar chart
