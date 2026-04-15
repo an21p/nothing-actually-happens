@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polymarket-backtester"
+version = "0.1.0"
+description = "Backtester for the 'nothing ever happens' thesis on Polymarket"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "httpx>=0.27",
+    "web3>=7.0",
+    "streamlit>=1.38",
+    "plotly>=5.24",
+    "python-dotenv>=1.0",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
