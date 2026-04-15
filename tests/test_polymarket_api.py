@@ -72,3 +72,12 @@ def test_parse_market_yes_resolution():
 def test_parse_market_skips_neg_risk():
     market = {**SAMPLE_GAMMA_MARKET, "negRisk": True}
     assert parse_market(market) is None
+
+def test_parse_market_skips_non_yes_no_outcomes():
+    market = {
+        **SAMPLE_GAMMA_MARKET,
+        "outcomes": json.dumps(["Team A", "Team B"]),
+        "outcomePrices": json.dumps(["1", "0"]),
+        "clobTokenIds": json.dumps(["111", "222"]),
+    }
+    assert parse_market(market) is None

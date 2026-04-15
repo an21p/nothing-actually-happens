@@ -29,6 +29,11 @@ def parse_market(raw: dict) -> dict | None:
     if len(outcomes) != 2:
         return None
 
+    # Only accept Yes/No binary markets (skip eSports, team-name markets, etc.)
+    outcome_set = {o.lower() for o in outcomes}
+    if outcome_set != {"yes", "no"}:
+        return None
+
     resolution = determine_resolution(outcomes, prices)
 
     try:

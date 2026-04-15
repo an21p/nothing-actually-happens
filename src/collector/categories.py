@@ -19,7 +19,7 @@ CATEGORY_PATTERNS: dict[str, list[str]] = {
     "geopolitical": [
         r"\b(invade|invasion|blockade|nato|troops|missile|nuclear|sanctions|annex)\b",
         r"\b(russia|china|iran|ukraine|taiwan|israel|north korea|syria)\b",
-        r"\b(war|conflict|military|strike|deploy|ceasefire|treaty)\b",
+        r"\b(war|conflict|military|airstrike|deploy|ceasefire|treaty)\b",
     ],
     "political": [
         r"\b(congress|senate|house|parliament|legislation|bill|law|act)\b",
