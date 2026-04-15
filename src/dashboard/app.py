@@ -155,9 +155,9 @@ def render_strategy_comparison():
         st.warning("No backtest results found. Run a backtest first.")
         return
 
-    # Get all run_ids and their strategies
     results_q = (
         session.query(BacktestResult)
+        .filter(BacktestResult.run_id == latest_run_id)
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
     )
@@ -217,6 +217,7 @@ def render_deep_dive():
 
     dive_q = (
         session.query(BacktestResult)
+        .filter(BacktestResult.run_id == latest_run_id)
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
     )
@@ -305,13 +306,12 @@ def render_market_browser():
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # Market detail expander
-    selected_q = st.selectbox(
+    selected_idx = st.selectbox(
         "Select market for detail view",
-        [m.question[:80] for m in markets],
+        range(len(markets)),
+        format_func=lambda i: markets[i].question[:80],
     )
-    selected_market = next(
-        (m for m in markets if m.question[:80] == selected_q), None
-    )
+    selected_market = markets[selected_idx] if markets else None
 
     if selected_market:
         with st.expander(f"Detail: {selected_market.question[:60]}...", expanded=True):
