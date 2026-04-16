@@ -2,7 +2,12 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
-from src.collector.polymarket_api import parse_market, determine_resolution, fetch_resolved_markets
+from src.collector.polymarket_api import (
+    parse_market,
+    parse_open_market,
+    determine_resolution,
+    fetch_resolved_markets,
+)
 
 SAMPLE_GAMMA_MARKET = {
     "id": "1237864",
@@ -89,6 +94,62 @@ def test_parse_market_skips_non_yes_no_outcomes():
         "clobTokenIds": json.dumps(["111", "222"]),
     }
     assert parse_market(market) is None
+
+
+def test_parse_market_populates_end_date():
+    result = parse_market(SAMPLE_GAMMA_MARKET)
+    assert result["end_date"] is not None
+    assert result["end_date"] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+
+SAMPLE_OPEN_MARKET = {
+    "id": "12345",
+    "conditionId": "0xopen1",
+    "slug": "will-live-event-happen",
+    "question": "Will the live event happen by April 30, 2026?",
+    "outcomes": json.dumps(["Yes", "No"]),
+    "outcomePrices": json.dumps(["0.25", "0.75"]),
+    "clobTokenIds": json.dumps(["aaa", "bbb"]),
+    "active": True,
+    "closed": False,
+    "createdAt": "2026-04-10T00:00:00.000000Z",
+    "endDate": "2026-04-30T00:00:00Z",
+    "category": "Geopolitics",
+    "negRisk": False,
+}
+
+
+def test_parse_open_market_accepts_unresolved():
+    result = parse_open_market(SAMPLE_OPEN_MARKET)
+    assert result is not None
+    assert result["id"] == "0xopen1"
+    assert result["resolution"] is None
+    assert result["resolved_at"] is None
+    assert result["no_token_id"] == "bbb"
+    assert result["category"] == "geopolitical"
+    assert result["end_date"] == datetime(2026, 4, 30, tzinfo=timezone.utc)
+    assert result["source_url"] == "https://polymarket.com/event/will-live-event-happen"
+
+
+def test_parse_open_market_rejects_neg_risk():
+    market = {**SAMPLE_OPEN_MARKET, "negRisk": True}
+    assert parse_open_market(market) is None
+
+
+def test_parse_open_market_rejects_non_yes_no():
+    market = {
+        **SAMPLE_OPEN_MARKET,
+        "outcomes": json.dumps(["Team A", "Team B"]),
+    }
+    assert parse_open_market(market) is None
+
+
+def test_parse_open_market_handles_missing_end_date():
+    market = {**SAMPLE_OPEN_MARKET}
+    market.pop("endDate", None)
+    result = parse_open_market(market)
+    assert result is not None
+    assert result["end_date"] is None
 
 
 def _make_api_market(condition_id: str, question: str = "Test?") -> dict:

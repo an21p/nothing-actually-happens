@@ -1,5 +1,4 @@
 import argparse
-import re
 import uuid
 
 from sqlalchemy import select
@@ -8,64 +7,33 @@ from sqlalchemy.orm import Session
 from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult
 from src.backtester.strategies import STRATEGIES
-
-
-_MONTH_PATTERN = (
-    r"(?:january|february|march|april|may|june|july|august|september|october|"
-    r"november|december|jan|feb|mar|apr|may|jun|jul|aug|sept|sep|oct|nov|dec)"
+from src.backtester.selection import (
+    SELECTION_MODES,
+    _PRIORITY_KEYS,
+    _select_markets,
+    _template_key,
 )
-_DATE_PHRASE_RE = re.compile(
-    rf"\b(?:by|on|before|after|until|in|week\s+of)\s+{_MONTH_PATTERN}\.?\s+"
-    rf"\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{2,4}})?",
-    re.IGNORECASE,
-)
-_BARE_MONTH_DATE_RE = re.compile(
-    rf"\b{_MONTH_PATTERN}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{2,4}})?",
-    re.IGNORECASE,
-)
-_NUMERIC_DATE_RE = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
-_WHITESPACE_RE = re.compile(r"\s+")
+from src.live.sizing import SIZING_RULES, SizingResult
+
+__all__ = [
+    "run_backtest",
+    "run_all_strategies",
+    "SELECTION_MODES",
+    "_PRIORITY_KEYS",
+    "_select_markets",
+    "_template_key",
+]
 
 
-def _template_key(question: str) -> str:
-    text = _DATE_PHRASE_RE.sub("", question)
-    text = _BARE_MONTH_DATE_RE.sub("", text)
-    text = _NUMERIC_DATE_RE.sub("", text)
-    text = _WHITESPACE_RE.sub(" ", text).strip().lower()
-    return text
-
-
-SELECTION_MODES = ("none", "earliest_created", "earliest_deadline")
-
-_PRIORITY_KEYS = {
-    "earliest_created": lambda m: (m.created_at, m.resolved_at or m.created_at),
-    "earliest_deadline": lambda m: (m.resolved_at or m.created_at, m.created_at),
-}
-
-
-def _select_markets(markets, mode):
-    if mode == "none":
-        return list(markets)
-    if mode not in _PRIORITY_KEYS:
-        raise ValueError(f"Unknown selection mode: {mode}")
-
-    sort_key = _PRIORITY_KEYS[mode]
-    groups: dict[str, list] = {}
-    for m in markets:
-        groups.setdefault(_template_key(m.question), []).append(m)
-
-    selected = []
-    for group in groups.values():
-        group.sort(key=sort_key)
-        emitted = []
-        for candidate in group:
-            if all(
-                (e.resolved_at or e.created_at) <= candidate.created_at
-                for e in emitted
-            ):
-                emitted.append(candidate)
-        selected.extend(emitted)
-    return selected
+def _compute_sizing(
+    rule: str, params: dict, entry_price: float, bankroll: float
+) -> SizingResult | None:
+    if rule == "unit":
+        return None
+    if rule not in SIZING_RULES:
+        raise ValueError(f"Unknown sizing rule: {rule}")
+    fn = SIZING_RULES[rule]
+    return fn(entry_price=entry_price, bankroll=bankroll, **params)
 
 
 def run_backtest(
@@ -74,9 +42,14 @@ def run_backtest(
     params: dict,
     categories: list[str] | None = None,
     selection_mode: str = "none",
+    sizing_rule: str = "unit",
+    sizing_params: dict | None = None,
+    bankroll: float = 1_000_000.0,
 ) -> str:
     if selection_mode not in SELECTION_MODES:
         raise ValueError(f"Unknown selection mode: {selection_mode}")
+
+    sizing_params = sizing_params or {}
 
     strategy_info = STRATEGIES[strategy_name]
     strategy_fn = strategy_info["fn"]
@@ -112,11 +85,19 @@ def run_backtest(
         exit_price = 1.0 if market.resolution == "No" else 0.0
         profit = exit_price - entry_price
 
+        sizing = _compute_sizing(sizing_rule, sizing_params, entry_price, bankroll)
+        size_shares = sizing.shares if sizing else None
+        size_notional = sizing.notional if sizing else None
+        sizing_rule_label = sizing.rule if sizing else None
+        pnl_notional = profit * sizing.shares if sizing else None
+
         session.add(BacktestResult(
             market_id=market.id, strategy=strategy_label,
             entry_price=entry_price, entry_timestamp=entry_timestamp,
             exit_price=exit_price, profit=profit,
             category=market.category, run_id=run_id,
+            size_shares=size_shares, size_notional=size_notional,
+            sizing_rule=sizing_rule_label, pnl_notional=pnl_notional,
         ))
 
     session.commit()
@@ -147,7 +128,30 @@ def main():
         default="none",
         help="Selection mode for deduplicating template-duplicate markets",
     )
+    parser.add_argument(
+        "--sizing",
+        type=str,
+        choices=["unit", "fixed_notional", "fixed_shares", "kelly"],
+        default="unit",
+        help="Position-sizing rule. 'unit' (default) writes per-share profit only.",
+    )
+    parser.add_argument("--sizing-notional", type=float, default=100.0)
+    parser.add_argument("--sizing-shares", type=float, default=100.0)
+    parser.add_argument("--sizing-kelly-win-rate", type=float, default=0.75)
+    parser.add_argument("--sizing-kelly-fraction", type=float, default=0.25)
+    parser.add_argument("--bankroll", type=float, default=1_000_000.0)
     args = parser.parse_args()
+
+    sizing_params: dict = {}
+    if args.sizing == "fixed_notional":
+        sizing_params = {"notional": args.sizing_notional}
+    elif args.sizing == "fixed_shares":
+        sizing_params = {"shares": args.sizing_shares}
+    elif args.sizing == "kelly":
+        sizing_params = {
+            "win_rate": args.sizing_kelly_win_rate,
+            "kelly_fraction": args.sizing_kelly_fraction,
+        }
 
     engine = get_engine()
     session = get_session(engine)
@@ -160,7 +164,9 @@ def main():
         elif args.param and args.strategy == "snapshot":
             params["offset_hours"] = int(args.param)
         run_id = run_backtest(
-            session, args.strategy, params, categories, args.selection
+            session, args.strategy, params, categories, args.selection,
+            sizing_rule=args.sizing, sizing_params=sizing_params,
+            bankroll=args.bankroll,
         )
         print(f"Backtest complete. Run ID: {run_id}")
     else:

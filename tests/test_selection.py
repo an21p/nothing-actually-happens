@@ -10,13 +10,14 @@ def _utc(year, month, day, hour=0):
     return datetime(year, month, day, hour, tzinfo=timezone.utc)
 
 
-def _market(mid, question, created_at, resolved_at):
+def _market(mid, question, created_at, resolved_at, end_date=None):
     return Market(
         id=mid,
         question=question,
         category="political",
         no_token_id=f"tok_{mid}",
         created_at=created_at,
+        end_date=end_date,
         resolved_at=resolved_at,
         resolution="No",
     )
@@ -159,3 +160,49 @@ def test_select_markets_missing_resolved_at_falls_back_to_created():
     m = _market("nores", "Will X happen by Jan 5, 2026?", _utc(2026, 1, 1), None)
     result = _select_markets([m], "earliest_deadline")
     assert [x.id for x in result] == ["nores"]
+
+
+def test_earliest_deadline_uses_end_date_when_unresolved():
+    # Live markets: resolved_at is None, but end_date (from Gamma) should drive the priority.
+    # Without end_date support, these would tie on created_at and emission order would be arbitrary.
+    markets = [
+        _market(
+            "live_late",
+            "Will X strike by January 31, 2026?",
+            _utc(2026, 1, 1),
+            None,
+            end_date=_utc(2026, 1, 31),
+        ),
+        _market(
+            "live_early",
+            "Will X strike by January 10, 2026?",
+            _utc(2026, 1, 1),
+            None,
+            end_date=_utc(2026, 1, 10),
+        ),
+    ]
+    result = _select_markets(markets, "earliest_deadline")
+    assert [m.id for m in result] == ["live_early"]
+
+
+def test_earliest_deadline_resolved_at_wins_over_end_date():
+    # Backtester case: resolved_at takes precedence since end_date may have been extended.
+    m_old_end = _market(
+        "has_resolved",
+        "Will Y happen?",
+        _utc(2026, 1, 1),
+        resolved_at=_utc(2026, 1, 5),
+        end_date=_utc(2026, 1, 30),
+    )
+    m_later = _market(
+        "live_earlier_end",
+        "Will Y happen?",
+        _utc(2026, 1, 2),
+        None,
+        end_date=_utc(2026, 1, 3),
+    )
+    # has_resolved's effective deadline is Jan 5 (resolved_at).
+    # live_earlier_end's deadline is Jan 3 (end_date).
+    # live_earlier_end should come first.
+    result = _select_markets([m_old_end, m_later], "earliest_deadline")
+    assert [m.id for m in result] == ["live_earlier_end"]

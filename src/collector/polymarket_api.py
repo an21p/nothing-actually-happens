@@ -18,7 +18,22 @@ def determine_resolution(outcomes: list[str], prices: list[str]) -> str | None:
     return None
 
 
-def parse_market(raw: dict) -> dict | None:
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00").replace(" ", "T"))
+    except ValueError:
+        return None
+
+
+def _parse_market_common(raw: dict) -> dict | None:
+    """Shared parsing for resolved and open Yes/No binary markets.
+
+    Returns the common fields (no resolution/resolved_at) or None if the
+    market is a negRisk / multi-outcome / non-Yes-No market. Callers
+    layer resolution-specific fields on top.
+    """
     if raw.get("negRisk"):
         return None
 
@@ -32,13 +47,8 @@ def parse_market(raw: dict) -> dict | None:
     if len(outcomes) != 2:
         return None
 
-    # Only accept Yes/No binary markets (skip eSports, team-name markets, etc.)
     outcome_set = {o.lower() for o in outcomes}
     if outcome_set != {"yes", "no"}:
-        return None
-
-    resolution = determine_resolution(outcomes, prices)
-    if resolution is None:
         return None
 
     try:
@@ -49,13 +59,7 @@ def parse_market(raw: dict) -> dict | None:
     no_token_id = clob_token_ids[no_idx]
 
     created_at = datetime.fromisoformat(raw["createdAt"].replace("Z", "+00:00"))
-
-    resolved_at = None
-    if raw.get("closedTime"):
-        try:
-            resolved_at = datetime.fromisoformat(raw["closedTime"].replace(" ", "T"))
-        except ValueError:
-            pass
+    end_date = _parse_datetime(raw.get("endDate"))
 
     category = classify_market(raw["question"], raw.get("category"))
     slug = raw.get("slug", "")
@@ -66,10 +70,44 @@ def parse_market(raw: dict) -> dict | None:
         "category": category,
         "no_token_id": no_token_id,
         "created_at": created_at,
-        "resolved_at": resolved_at,
-        "resolution": resolution,
+        "end_date": end_date,
         "source_url": f"https://polymarket.com/event/{slug}" if slug else None,
+        # raw outcomes/prices retained so resolution-aware callers can use them
+        "_outcomes": outcomes,
+        "_prices": prices,
     }
+
+
+def parse_market(raw: dict) -> dict | None:
+    """Parse a closed & resolved market. Returns None unless the market has a clear resolution."""
+    common = _parse_market_common(raw)
+    if common is None:
+        return None
+
+    resolution = determine_resolution(common["_outcomes"], common["_prices"])
+    if resolution is None:
+        return None
+
+    resolved_at = _parse_datetime(raw.get("closedTime"))
+
+    common.pop("_outcomes", None)
+    common.pop("_prices", None)
+    common["resolution"] = resolution
+    common["resolved_at"] = resolved_at
+    return common
+
+
+def parse_open_market(raw: dict) -> dict | None:
+    """Parse an open/active market. Resolution is None; resolved_at is None."""
+    common = _parse_market_common(raw)
+    if common is None:
+        return None
+
+    common.pop("_outcomes", None)
+    common.pop("_prices", None)
+    common["resolution"] = None
+    common["resolved_at"] = None
+    return common
 
 
 def fetch_resolved_markets(

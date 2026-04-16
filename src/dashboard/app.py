@@ -6,8 +6,9 @@ import streamlit as st
 from sqlalchemy import func
 
 from src.storage.db import get_engine, get_session
-from src.storage.models import Market, PriceSnapshot, BacktestResult
-from src.backtester.engine import run_all_strategies
+from src.storage.models import Market, PriceSnapshot, BacktestResult, Position
+from src.backtester.engine import run_all_strategies, run_backtest
+from src.live.sizing import fixed_notional, fixed_shares, kelly
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 
@@ -119,7 +120,15 @@ latest_run_ids = [
 # ---- Navigation ----
 
 view = st.sidebar.radio(
-    "View", ["Thesis Overview", "Strategy Comparison", "Deep Dive", "Market Browser"]
+    "View",
+    [
+        "Thesis Overview",
+        "Strategy Comparison",
+        "Deep Dive",
+        "Market Browser",
+        "Live Positions",
+        "Sizing Comparison",
+    ],
 )
 
 
@@ -529,6 +538,319 @@ def render_market_browser():
                 st.dataframe(pd.DataFrame(result_data), hide_index=True)
 
 
+# ---- View: Live Positions ----
+
+
+def _humanize_age(delta_seconds: float) -> str:
+    hours = delta_seconds / 3600.0
+    if hours < 48:
+        return f"{hours:.1f}h"
+    return f"{hours / 24:.1f}d"
+
+
+def _position_detail(pos: Position, market: Market | None) -> None:
+    st.markdown(f"### {market.question if market else pos.market_id}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Entry", f"${pos.entry_price:.4f}")
+    c2.metric(
+        "Current mid",
+        f"${pos.last_mark_price:.4f}" if pos.last_mark_price is not None else "—",
+    )
+    c3.metric(
+        "Unrealized P&L",
+        f"${pos.unrealized_pnl:+,.2f}" if pos.unrealized_pnl is not None else "—",
+    )
+    c4.metric("Shares", f"{pos.size_shares:,.2f}")
+
+    if market is not None and market.source_url:
+        st.markdown(f"[Open on Polymarket]({market.source_url})")
+
+    if market is not None:
+        snapshots = (
+            session.query(PriceSnapshot)
+            .filter_by(market_id=market.id)
+            .order_by(PriceSnapshot.timestamp)
+            .all()
+        )
+        if snapshots:
+            df = pd.DataFrame(
+                [
+                    {"Date": s.timestamp, '"NO" Price': s.no_price, "Source": s.source}
+                    for s in snapshots
+                ]
+            )
+            fig = px.line(
+                df,
+                x="Date",
+                y='"NO" Price',
+                color="Source",
+                title=f'"NO" Price — entry @ ${pos.entry_price:.4f}',
+            )
+            fig.update_yaxes(range=[0, 1])
+            fig.add_hline(
+                y=pos.entry_price, line_dash="dash", line_color="orange",
+                annotation_text="entry",
+            )
+            fig.add_vline(
+                x=pos.entry_timestamp, line_dash="dot", line_color="gray",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def render_live_positions():
+    st.header("Live Positions")
+
+    positions = session.query(Position).all()
+    if not positions:
+        st.info("No live positions yet. Run `uv run python -m src.live.runner`.")
+        return
+
+    open_pos = [p for p in positions if p.status == "open"]
+    closed_pos = [p for p in positions if p.status != "open"]
+
+    realized = sum((p.realized_pnl or 0.0) for p in closed_pos)
+    unrealized = sum((p.unrealized_pnl or 0.0) for p in open_pos)
+    wins = sum(1 for p in closed_pos if (p.realized_pnl or 0.0) > 0)
+    win_rate = wins / len(closed_pos) if closed_pos else 0.0
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Open", len(open_pos))
+    c2.metric("Resolved", len(closed_pos))
+    c3.metric("Realized P&L", f"${realized:+,.2f}")
+    c4.metric("Unrealized P&L", f"${unrealized:+,.2f}")
+    c5.metric("Win rate", f"{win_rate:.1%}" if closed_pos else "—")
+
+    market_ids = [p.market_id for p in positions]
+    markets_by_id = {
+        m.id: m
+        for m in session.query(Market).filter(Market.id.in_(market_ids)).all()
+    }
+
+    now = datetime.utcnow()
+
+    st.subheader(f"Open positions ({len(open_pos)})")
+    if open_pos:
+        rows = []
+        for p in open_pos:
+            m = markets_by_id.get(p.market_id)
+            entry_ts = p.entry_timestamp
+            age = (now - entry_ts.replace(tzinfo=None)).total_seconds() if entry_ts else 0.0
+            proj_no = (1.0 - p.entry_price) * p.size_shares
+            rows.append({
+                "Question": m.question if m else p.market_id,
+                "Category": m.category if m else "",
+                "Age": _humanize_age(age),
+                "Entry": p.entry_price,
+                "Mid": p.last_mark_price,
+                "Shares": p.size_shares,
+                "Unrealized": p.unrealized_pnl,
+                "Projected (No)": proj_no,
+                "Entered": p.entry_timestamp,
+                "id": p.id,
+            })
+        df_open = pd.DataFrame(rows)
+        st.dataframe(
+            df_open.drop(columns=["id"]),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Entry": st.column_config.NumberColumn(format="$%.4f"),
+                "Mid": st.column_config.NumberColumn(format="$%.4f"),
+                "Unrealized": st.column_config.NumberColumn(format="$%+.2f"),
+                "Projected (No)": st.column_config.NumberColumn(format="$%+.2f"),
+                "Entered": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+            },
+        )
+
+        selected_q = st.selectbox(
+            "Drill down",
+            options=["—"] + [r["Question"] for r in rows],
+        )
+        if selected_q != "—":
+            pick = next(r for r in rows if r["Question"] == selected_q)
+            pos = session.get(Position, pick["id"])
+            _position_detail(pos, markets_by_id.get(pos.market_id))
+
+    st.subheader(f"Resolved positions ({len(closed_pos)})")
+    if closed_pos:
+        rows = []
+        for p in sorted(closed_pos, key=lambda x: x.exit_timestamp or datetime.min, reverse=True):
+            m = markets_by_id.get(p.market_id)
+            rows.append({
+                "Question": m.question if m else p.market_id,
+                "Entry": p.entry_price,
+                "Exit": p.exit_price,
+                "Realized": p.realized_pnl,
+                "Entered": p.entry_timestamp,
+                "Exited": p.exit_timestamp,
+            })
+        df_closed = pd.DataFrame(rows)
+        st.dataframe(
+            df_closed,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Entry": st.column_config.NumberColumn(format="$%.4f"),
+                "Exit": st.column_config.NumberColumn(format="$%.2f"),
+                "Realized": st.column_config.NumberColumn(format="$%+.2f"),
+                "Entered": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+                "Exited": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+            },
+        )
+
+    # Equity curve: cumulative realized, sorted by exit timestamp.
+    realized_rows = sorted(
+        [p for p in closed_pos if p.exit_timestamp],
+        key=lambda p: p.exit_timestamp,
+    )
+    if realized_rows:
+        eq_df = pd.DataFrame([
+            {"Date": p.exit_timestamp, "Realized": p.realized_pnl or 0.0}
+            for p in realized_rows
+        ])
+        eq_df["Cumulative"] = eq_df["Realized"].cumsum()
+        fig = px.line(eq_df, x="Date", y="Cumulative", title="Cumulative realized P&L")
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ---- View: Sizing Comparison ----
+
+
+def _apply_rule(rule: str, entry_price: float, bankroll: float, cfg: dict) -> float:
+    """Return shares for the given rule + params at the given entry."""
+    if rule == "fixed_notional":
+        return fixed_notional(
+            entry_price=entry_price, bankroll=bankroll, notional=cfg["notional"]
+        ).shares
+    if rule == "fixed_shares":
+        return fixed_shares(
+            entry_price=entry_price, bankroll=bankroll, shares=cfg["shares"]
+        ).shares
+    if rule == "kelly":
+        return kelly(
+            entry_price=entry_price,
+            bankroll=bankroll,
+            win_rate=cfg["win_rate"],
+            kelly_fraction=cfg["kelly_fraction"],
+        ).shares
+    return 0.0
+
+
+def render_sizing_comparison():
+    st.header("Sizing Comparison")
+    st.caption(
+        "Overlay three cumulative-P&L curves on the same resolved trades: "
+        "fixed notional, fixed shares, and fractional Kelly. "
+        "Picks a backtest run with sizing_rule populated."
+    )
+
+    strategies = sorted({
+        row[0]
+        for row in session.query(BacktestResult.strategy).distinct().all()
+    })
+    if not strategies:
+        st.info("No backtest results yet.")
+        return
+
+    strategy_label = st.selectbox(
+        "Strategy",
+        strategies,
+        index=strategies.index("at_creation") if "at_creation" in strategies else 0,
+    )
+
+    latest_id = (
+        session.query(func.max(BacktestResult.id))
+        .filter(BacktestResult.strategy == strategy_label)
+        .scalar()
+    )
+    run_id = (
+        session.query(BacktestResult.run_id)
+        .filter(BacktestResult.id == latest_id)
+        .scalar()
+    )
+    results = (
+        session.query(BacktestResult)
+        .filter(
+            BacktestResult.run_id == run_id,
+            BacktestResult.strategy == strategy_label,
+        )
+        .order_by(BacktestResult.entry_timestamp)
+        .all()
+    )
+    if not results:
+        st.info("No trades for the selected strategy.")
+        return
+
+    bankroll = st.number_input("Bankroll (USDC)", value=10_000.0, step=500.0)
+    notional = st.number_input("Fixed notional per trade ($)", value=100.0, step=10.0)
+    shares = st.number_input("Fixed shares per trade", value=100.0, step=10.0)
+    win_rate = st.slider("Kelly win rate", 0.5, 0.99, 0.85, step=0.01)
+    kelly_fraction = st.slider("Kelly fraction", 0.05, 1.0, 0.25, step=0.05)
+
+    rule_cfgs = {
+        "fixed_notional": {"notional": notional},
+        "fixed_shares": {"shares": shares},
+        "kelly": {"win_rate": win_rate, "kelly_fraction": kelly_fraction},
+    }
+
+    curves: dict[str, list[dict]] = {rule: [] for rule in rule_cfgs}
+    totals: dict[str, dict[str, float]] = {
+        rule: {"total_pnl": 0.0, "wins": 0, "losses": 0, "notional": 0.0}
+        for rule in rule_cfgs
+    }
+    for r in results:
+        for rule, cfg in rule_cfgs.items():
+            size_shares = _apply_rule(rule, r.entry_price, bankroll, cfg)
+            pnl = r.profit * size_shares
+            totals[rule]["total_pnl"] += pnl
+            totals[rule]["notional"] += size_shares * r.entry_price
+            if r.profit > 0:
+                totals[rule]["wins"] += 1
+            elif r.profit < 0:
+                totals[rule]["losses"] += 1
+            curves[rule].append({
+                "Date": r.entry_timestamp,
+                "P&L": pnl,
+                "Rule": rule,
+            })
+
+    frames = []
+    for rule, rows in curves.items():
+        df = pd.DataFrame(rows).sort_values("Date")
+        df["Cumulative"] = df["P&L"].cumsum()
+        frames.append(df)
+    plot_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not plot_df.empty:
+        fig = px.line(
+            plot_df, x="Date", y="Cumulative", color="Rule",
+            title="Cumulative P&L by sizing rule",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    rows = []
+    n = len(results)
+    for rule, stats_ in totals.items():
+        rows.append({
+            "Rule": rule,
+            "Total P&L": stats_["total_pnl"],
+            "Trades": n,
+            "Wins": stats_["wins"],
+            "Losses": stats_["losses"],
+            "Win rate": (stats_["wins"] / n) if n else 0.0,
+            "Avg notional/trade": stats_["notional"] / n if n else 0.0,
+        })
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Total P&L": st.column_config.NumberColumn(format="$%+.2f"),
+            "Win rate": st.column_config.NumberColumn(format="%.1%%"),
+            "Avg notional/trade": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+
+
 # ---- Render selected view ----
 
 if view == "Thesis Overview":
@@ -539,5 +861,9 @@ elif view == "Deep Dive":
     render_deep_dive()
 elif view == "Market Browser":
     render_market_browser()
+elif view == "Live Positions":
+    render_live_positions()
+elif view == "Sizing Comparison":
+    render_sizing_comparison()
 
 session.close()

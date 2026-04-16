@@ -161,6 +161,55 @@ def test_run_backtest_default_selection_is_none(session):
     assert all(r.strategy == "at_creation" for r in results)
 
 
+def test_run_backtest_default_unit_sizing_leaves_columns_null(session):
+    _seed_data(session)
+    run_id = run_backtest(
+        session, strategy_name="at_creation", params={}, categories=None
+    )
+    results = session.query(BacktestResult).filter_by(run_id=run_id).all()
+    assert all(r.size_shares is None for r in results)
+    assert all(r.size_notional is None for r in results)
+    assert all(r.sizing_rule is None for r in results)
+    assert all(r.pnl_notional is None for r in results)
+
+
+def test_run_backtest_fixed_notional_populates_sizing_columns(session):
+    _seed_data(session)
+    run_id = run_backtest(
+        session,
+        strategy_name="at_creation",
+        params={},
+        categories=None,
+        sizing_rule="fixed_notional",
+        sizing_params={"notional": 100.0},
+    )
+    results = session.query(BacktestResult).filter_by(run_id=run_id).all()
+    r1 = next(r for r in results if r.market_id == "0xcond1")
+    assert r1.sizing_rule == "fixed_notional"
+    assert r1.size_notional == 100.0
+    assert abs(r1.size_shares - (100.0 / 0.90)) < 1e-9
+    # exit=1.0, entry=0.90 → per-share profit 0.10
+    assert abs(r1.pnl_notional - (1.0 - 0.90) * (100.0 / 0.90)) < 1e-9
+
+
+def test_run_backtest_fixed_shares_populates_sizing_columns(session):
+    _seed_data(session)
+    run_id = run_backtest(
+        session,
+        strategy_name="at_creation",
+        params={},
+        categories=None,
+        sizing_rule="fixed_shares",
+        sizing_params={"shares": 50.0},
+    )
+    results = session.query(BacktestResult).filter_by(run_id=run_id).all()
+    r1 = next(r for r in results if r.market_id == "0xcond1")
+    assert r1.sizing_rule == "fixed_shares"
+    assert abs(r1.size_shares - 50.0) < 1e-9
+    assert abs(r1.size_notional - 50.0 * 0.90) < 1e-9
+    assert abs(r1.pnl_notional - (1.0 - 0.90) * 50.0) < 1e-9
+
+
 def test_run_all_strategies_runs_cross_product(session):
     _seed_data(session)
     from src.backtester.engine import run_all_strategies

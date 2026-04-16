@@ -42,7 +42,7 @@ STRATEGIES = {
     "at_creation": {"fn": at_creation, "params": [{}]},
     "threshold": {
         "fn": price_threshold,
-        "params": [{"threshold": t} for t in [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]],
+        "params": [{"threshold": t} for t in [0.20, 0.30, 0.40, 0.50, 0.60]],
     },
     "snapshot": {
         "fn": time_snapshot,
