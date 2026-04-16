@@ -11,6 +11,21 @@ from src.backtester.engine import run_all_strategies
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 
+STRATEGY_DESCRIPTIONS = {
+    "at_creation": 'Buys the "NO" token at the first recorded price after market creation. Baseline strategy to measure early entry timing.',
+    "threshold": 'Waits for the "NO" token price to drop to a specific level before buying. Tests entry discipline by requiring a minimum discount.',
+    "snapshot": 'Buys the "NO" token at a fixed time offset after market creation (24h, 48h, or 7d). Tests whether fixed timing works as an edge.',
+    "best_price": 'Buys at the lowest "NO" token price observed during the market\'s lifetime. Theoretical upper bound with perfect hindsight.',
+}
+
+
+def get_strategy_description(strategy_label: str) -> str:
+    """Return the description for a strategy label like 'threshold_0.85'."""
+    base = strategy_label.split("_")[0]
+    if base == "at" and strategy_label.startswith("at_creation"):
+        base = "at_creation"
+    return STRATEGY_DESCRIPTIONS.get(base, "")
+
 
 @st.cache_resource
 def init_db():
@@ -79,13 +94,22 @@ if st.sidebar.button("Run All Backtests"):
     st.sidebar.success("Done!")
     st.rerun()
 
-# Latest run_id
-latest_run_id = (
-    session.query(BacktestResult.run_id)
-    .order_by(BacktestResult.id.desc())
-    .limit(1)
-    .scalar()
+# Latest run_id per strategy (each strategy gets its own run_id)
+_latest_id_subq = (
+    session.query(
+        BacktestResult.strategy,
+        func.max(BacktestResult.id).label("max_id"),
+    )
+    .group_by(BacktestResult.strategy)
+    .subquery()
 )
+latest_run_ids = [
+    row[0]
+    for row in session.query(BacktestResult.run_id)
+    .join(_latest_id_subq, BacktestResult.id == _latest_id_subq.c.max_id)
+    .distinct()
+    .all()
+]
 
 # ---- Navigation ----
 
@@ -97,7 +121,7 @@ view = st.sidebar.radio(
 # ---- View: Thesis Overview ----
 
 def render_thesis_overview():
-    st.header("Thesis Overview: Does Nothing Ever Happen?")
+    st.header("Thesis Overview: Does Anything Ever Happen?")
 
     base_q = session.query(Market).filter(
         Market.resolution.isnot(None),
@@ -112,9 +136,9 @@ def render_thesis_overview():
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Resolved Markets", total_markets)
-    col2.metric("Resolved No", no_count)
+    col2.metric('Resolved "NO"', no_count)
     col3.metric("Resolved Yes", yes_count)
-    col4.metric("No Resolution Rate", f"{no_rate:.1%}")
+    col4.metric('"NO" Resolution Rate', f"{no_rate:.1%}")
 
     # Category breakdown
     cat_data = []
@@ -128,16 +152,16 @@ def render_thesis_overview():
         if cat_total > 0:
             cat_data.append({
                 "Category": cat,
-                "No Rate": cat_no / cat_total,
+                '"NO" Rate': cat_no / cat_total,
                 "Total": cat_total,
             })
 
     if cat_data:
         df = pd.DataFrame(cat_data)
         fig = px.bar(
-            df, x="Category", y="No Rate", text="Total",
-            title="No-Resolution Rate by Category",
-            color="No Rate",
+            df, x="Category", y='"NO" Rate', text="Total",
+            title='"NO" Resolution Rate by Category',
+            color='"NO" Rate',
             color_continuous_scale=["red", "yellow", "green"],
             range_color=[0, 1],
         )
@@ -151,13 +175,13 @@ def render_thesis_overview():
 def render_strategy_comparison():
     st.header("Strategy Comparison")
 
-    if not latest_run_id:
+    if not latest_run_ids:
         st.warning("No backtest results found. Run a backtest first.")
         return
 
     results_q = (
         session.query(BacktestResult)
-        .filter(BacktestResult.run_id == latest_run_id)
+        .filter(BacktestResult.run_id.in_(latest_run_ids))
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
     )
@@ -178,32 +202,44 @@ def render_strategy_comparison():
         profits = [r.profit for r in results]
         wins = sum(1 for p in profits if p > 0)
         total = len(profits)
+        avg_ev = sum(profits) / total if total else None
         rows.append({
             "Strategy": strategy,
             "Trades": total,
-            "Win Rate": f"{wins/total:.1%}" if total else "N/A",
-            "Avg EV": f"${sum(profits)/total:.4f}" if total else "N/A",
-            "Total P&L": f"${sum(profits):.2f}",
-            "Sharpe": f"{(sum(profits)/total) / (pd.Series(profits).std() or 1):.2f}" if total > 1 else "N/A",
-            "_avg_ev": sum(profits) / total if total else 0,
+            "Win Rate": (wins / total * 100) if total else None,
+            "Avg EV": avg_ev,
+            "Total P&L": sum(profits),
+            "Sharpe": (avg_ev / (pd.Series(profits).std() or 1)) if total > 1 else None,
+            "_avg_ev": avg_ev or 0,
+            "_win_rate": wins / total if total else 0,
         })
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows).sort_values("_win_rate", ascending=False).reset_index(drop=True)
 
-    # Color rows by EV
-    def highlight_ev(row):
-        ev = row["_avg_ev"]
-        if ev > 0:
-            return ["background-color: #d4edda"] * len(row)
-        elif ev < 0:
-            return ["background-color: #f8d7da"] * len(row)
-        return [""] * len(row)
-
-    display_df = df.drop(columns=["_avg_ev"])
+    display_df = df.drop(columns=["_avg_ev", "_win_rate"])
+    ev_values = df["_avg_ev"]
     styled = display_df.style.apply(
-        lambda row: highlight_ev(df.iloc[row.name]), axis=1
+        lambda row: (
+            ["background-color: rgba(40, 167, 69, 0.1)"] * len(row) if ev_values.iloc[row.name] > 0
+            else ["background-color: rgba(220, 53, 69, 0.1)"] * len(row) if ev_values.iloc[row.name] < 0
+            else [""] * len(row)
+        ), axis=1
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Win Rate": st.column_config.NumberColumn(format="%.1f%%"),
+            "Avg EV": st.column_config.NumberColumn(format="$%.4f"),
+            "Total P&L": st.column_config.NumberColumn(format="$%.2f"),
+            "Sharpe": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+
+    st.markdown("### Strategy Descriptions")
+    for name, desc in STRATEGY_DESCRIPTIONS.items():
+        st.markdown(f"- **{name}** — {desc}")
 
 
 # ---- View: Deep Dive Explorer ----
@@ -211,13 +247,13 @@ def render_strategy_comparison():
 def render_deep_dive():
     st.header("Deep Dive Explorer")
 
-    if not latest_run_id:
+    if not latest_run_ids:
         st.warning("No backtest results found. Run a backtest first.")
         return
 
     dive_q = (
         session.query(BacktestResult)
-        .filter(BacktestResult.run_id == latest_run_id)
+        .filter(BacktestResult.run_id.in_(latest_run_ids))
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
     )
@@ -237,35 +273,55 @@ def render_deep_dive():
     } for r in results])
 
     # Scatter plot: entry price vs profit
+    st.caption("Each dot is a single trade. Shows whether cheaper entries consistently lead to higher profits, and how categories cluster.")
     fig_scatter = px.scatter(
         df, x="entry_price", y="profit", color="category",
         title="Entry Price vs Profit",
-        labels={"entry_price": "No Entry Price", "profit": "Profit per Share"},
+        labels={"entry_price": '"NO" Entry Price', "profit": "Profit per Share"},
         hover_data=["strategy"],
     )
     fig_scatter.add_hline(y=0, line_dash="dash", line_color="gray")
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # Cumulative P&L curve
-    strategy_for_curve = st.selectbox(
-        "P&L Curve Strategy", sorted(df["strategy"].unique())
+    # Cumulative P&L curve — strategies ordered by total P&L descending
+    strategies_by_pnl = (
+        df.groupby("strategy")["profit"].sum().sort_values(ascending=False).index.tolist()
     )
-    curve_df = df[df["strategy"] == strategy_for_curve].sort_values("entry_timestamp")
-    curve_df["cumulative_pnl"] = curve_df["profit"].cumsum()
+    strategy_for_curve = st.selectbox("P&L Curve Strategy", strategies_by_pnl)
+    desc = get_strategy_description(strategy_for_curve)
+    if desc:
+        st.caption(desc)
+    st.caption("Running total of profits over time, broken down by category with an overall total. An upward slope means the strategy is consistently profitable; flat or declining signals it's losing edge.")
+    strategy_df = df[df["strategy"] == strategy_for_curve].sort_values("entry_timestamp")
+
+    by_category = strategy_df.copy()
+    by_category["cumulative_pnl"] = by_category.groupby("category")["profit"].cumsum()
+
+    total = strategy_df.copy()
+    total["cumulative_pnl"] = total["profit"].cumsum()
+    total["category"] = "Total"
+
+    curve_df = pd.concat([by_category, total], ignore_index=True)
 
     fig_pnl = px.line(
         curve_df, x="entry_timestamp", y="cumulative_pnl",
+        color="category",
         title=f"Cumulative P&L — {strategy_for_curve}",
-        labels={"entry_timestamp": "Date", "cumulative_pnl": "Cumulative P&L ($)"},
+        labels={"entry_timestamp": "Date", "cumulative_pnl": "Cumulative P&L ($)", "category": "Category"},
     )
+    for trace in fig_pnl.data:
+        if trace.name == "Total":
+            trace.line.width = 4
+            trace.line.color = "white"
     fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray")
     st.plotly_chart(fig_pnl, use_container_width=True)
 
     # Entry price histogram
+    st.caption("Shows where most entry prices land. A concentration at higher prices means fewer discount opportunities were available.")
     fig_hist = px.histogram(
         df, x="entry_price", nbins=30, color="category",
-        title="Distribution of No Entry Prices",
-        labels={"entry_price": "No Token Price at Entry"},
+        title='Distribution of "NO" Entry Prices',
+        labels={"entry_price": '"NO" Token Price at Entry'},
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
@@ -330,13 +386,13 @@ def render_market_browser():
             if snapshots:
                 price_df = pd.DataFrame([{
                     "Date": s.timestamp,
-                    "No Price": s.no_price,
+                    '"NO" Price': s.no_price,
                     "Source": s.source,
                 } for s in snapshots])
 
                 fig = px.line(
-                    price_df, x="Date", y="No Price",
-                    title="No Token Price History",
+                    price_df, x="Date", y='"NO" Price',
+                    title='"NO" Token Price History',
                     color="Source",
                 )
                 fig.update_yaxes(range=[0, 1])
