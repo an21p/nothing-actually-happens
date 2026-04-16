@@ -125,10 +125,13 @@ def run_backtest(
 
 def run_all_strategies(session: Session, categories: list[str] | None = None) -> list[str]:
     run_ids = []
-    for strategy_name, info in STRATEGIES.items():
-        for params in info["params"]:
-            run_id = run_backtest(session, strategy_name, params, categories)
-            run_ids.append(run_id)
+    for selection_mode in SELECTION_MODES:
+        for strategy_name, info in STRATEGIES.items():
+            for params in info["params"]:
+                run_id = run_backtest(
+                    session, strategy_name, params, categories, selection_mode
+                )
+                run_ids.append(run_id)
     return run_ids
 
 
@@ -137,6 +140,13 @@ def main():
     parser.add_argument("--strategy", type=str, default=None)
     parser.add_argument("--param", type=str, default=None)
     parser.add_argument("--categories", type=str, default=None)
+    parser.add_argument(
+        "--selection",
+        type=str,
+        choices=list(SELECTION_MODES),
+        default="none",
+        help="Selection mode for deduplicating template-duplicate markets",
+    )
     args = parser.parse_args()
 
     engine = get_engine()
@@ -149,7 +159,9 @@ def main():
             params["threshold"] = float(args.param)
         elif args.param and args.strategy == "snapshot":
             params["offset_hours"] = int(args.param)
-        run_id = run_backtest(session, args.strategy, params, categories)
+        run_id = run_backtest(
+            session, args.strategy, params, categories, args.selection
+        )
         print(f"Backtest complete. Run ID: {run_id}")
     else:
         run_ids = run_all_strategies(session, categories)

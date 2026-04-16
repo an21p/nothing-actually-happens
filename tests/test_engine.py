@@ -159,3 +159,22 @@ def test_run_backtest_default_selection_is_none(session):
     results = session.query(BacktestResult).filter_by(run_id=run_id).all()
     assert len(results) == 3
     assert all(r.strategy == "at_creation" for r in results)
+
+
+def test_run_all_strategies_runs_cross_product(session):
+    _seed_data(session)
+    from src.backtester.engine import run_all_strategies
+    from src.backtester.strategies import STRATEGIES
+
+    run_ids = run_all_strategies(session, categories=None)
+
+    expected_entry_combos = sum(len(info["params"]) for info in STRATEGIES.values())
+    expected_total = expected_entry_combos * 3  # none + earliest_created + earliest_deadline
+    assert len(run_ids) == expected_total
+
+    labels = {r.strategy for r in session.query(BacktestResult).all()}
+    # Ensure both selection suffixes appear in the label set.
+    assert any("__earliest_created" in l for l in labels)
+    assert any("__earliest_deadline" in l for l in labels)
+    # And that "none" mode labels are bare (no suffix).
+    assert any("__" not in l for l in labels)
