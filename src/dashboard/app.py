@@ -177,6 +177,58 @@ def render_thesis_overview():
 
 # ---- View: Strategy Comparison ----
 
+def render_trade_breakdown(strategy_label: str, results: list) -> None:
+    """Detail panel showing every trade that made up a strategy's row."""
+    st.markdown(f"### Trade Breakdown — `{strategy_label}`")
+    desc = get_strategy_description(strategy_label)
+    if desc:
+        st.caption(desc)
+
+    market_ids = [r.market_id for r in results]
+    markets_by_id = {
+        m.id: m
+        for m in session.query(Market).filter(Market.id.in_(market_ids)).all()
+    }
+
+    rows = []
+    for r in sorted(results, key=lambda x: x.profit, reverse=True):
+        m = markets_by_id.get(r.market_id)
+        rows.append({
+            "Question": (m.question if m else "(missing)"),
+            "Category": r.category,
+            "Resolution": m.resolution if m else "",
+            "Entry Price": r.entry_price,
+            "Exit Price": r.exit_price,
+            "Profit": r.profit,
+            "Entry": r.entry_timestamp,
+            "URL": m.source_url if m and m.source_url else "",
+        })
+
+    trades_df = pd.DataFrame(rows)
+    total_profit = trades_df["Profit"].sum()
+    wins = int((trades_df["Profit"] > 0).sum())
+    losses = int((trades_df["Profit"] < 0).sum())
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Trades", len(trades_df))
+    c2.metric("Wins / Losses", f"{wins} / {losses}")
+    c3.metric("Total P&L", f"${total_profit:,.2f}")
+    c4.metric("Avg Entry", f"${trades_df['Entry Price'].mean():.4f}")
+
+    st.dataframe(
+        trades_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Entry Price": st.column_config.NumberColumn(format="$%.4f"),
+            "Exit Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Profit": st.column_config.NumberColumn(format="$%+.4f"),
+            "Entry": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+            "URL": st.column_config.LinkColumn("Link", display_text="open"),
+        },
+    )
+
+
 def render_strategy_comparison():
     st.header("Strategy Comparison")
 
@@ -211,12 +263,19 @@ that you hold all the way to resolution (no early exit).
         st.warning("No backtest results found. Run a backtest first.")
         return
 
+    category_filter = st.selectbox(
+        "Filter by category",
+        ["All"] + sorted(selected_categories),
+    )
+
     results_q = (
         session.query(BacktestResult)
         .filter(BacktestResult.run_id.in_(latest_run_ids))
         .filter(BacktestResult.strategy.in_(selected_strategies))
         .filter(BacktestResult.category.in_(selected_categories))
     )
+    if category_filter != "All":
+        results_q = results_q.filter(BacktestResult.category == category_filter)
     results_q = _apply_date_filter(results_q, BacktestResult.entry_timestamp)
     all_results = results_q.all()
 
@@ -232,23 +291,29 @@ that you hold all the way to resolution (no early exit).
     rows = []
     for strategy, results in sorted(strategy_groups.items()):
         profits = [r.profit for r in results]
+        entry_costs = [r.entry_price for r in results]
         wins = sum(1 for p in profits if p > 0)
         total = len(profits)
         avg_ev = sum(profits) / total if total else None
+        total_pnl = sum(profits)
+        total_cost = sum(entry_costs)
+        roi = (total_pnl / total_cost * 100) if total_cost else None
         rows.append({
             "Strategy": strategy,
             "Trades": total,
             "Win Rate": (wins / total * 100) if total else None,
             "Avg EV": avg_ev,
-            "Total P&L": sum(profits),
-            "Sharpe": (avg_ev / (pd.Series(profits).std() or 1)) if total > 1 else None,
+            "Total P&L": total_pnl,
+            "Cost": total_cost,
+            "ROI": roi,
             "_avg_ev": avg_ev or 0,
             "_win_rate": wins / total if total else 0,
+            "_roi": roi if roi is not None else float("-inf"),
         })
 
-    df = pd.DataFrame(rows).sort_values("_win_rate", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values("_roi", ascending=False).reset_index(drop=True)
 
-    display_df = df.drop(columns=["_avg_ev", "_win_rate"])
+    display_df = df.drop(columns=["_avg_ev", "_win_rate", "_roi"])
     ev_values = df["_avg_ev"]
     styled = display_df.style.apply(
         lambda row: (
@@ -257,17 +322,25 @@ that you hold all the way to resolution (no early exit).
             else [""] * len(row)
         ), axis=1
     )
-    st.dataframe(
+    event = st.dataframe(
         styled,
         use_container_width=True,
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Win Rate": st.column_config.NumberColumn(format="%.1f%%"),
             "Avg EV": st.column_config.NumberColumn(format="$%.4f"),
             "Total P&L": st.column_config.NumberColumn(format="$%.2f"),
-            "Sharpe": st.column_config.NumberColumn(format="%.2f"),
+            "Cost": st.column_config.NumberColumn(format="$%.2f"),
+            "ROI": st.column_config.NumberColumn(format="%.2f%%"),
         },
     )
+
+    selected_rows = event.selection.rows if event and event.selection else []
+    if selected_rows:
+        selected_strategy = display_df.iloc[selected_rows[0]]["Strategy"]
+        render_trade_breakdown(selected_strategy, strategy_groups[selected_strategy])
 
     st.markdown("### Strategy Descriptions")
     for name, desc in STRATEGY_DESCRIPTIONS.items():
