@@ -7,7 +7,7 @@ import httpx
 from src.collector.categories import classify_market
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
-MARKETS_PER_PAGE = 100
+MARKETS_PER_PAGE = 1000
 
 
 def determine_resolution(outcomes: list[str], prices: list[str]) -> str | None:
@@ -20,6 +20,9 @@ def determine_resolution(outcomes: list[str], prices: list[str]) -> str | None:
 
 def parse_market(raw: dict) -> dict | None:
     if raw.get("negRisk"):
+        return None
+
+    if not all(k in raw for k in ("outcomes", "outcomePrices", "clobTokenIds")):
         return None
 
     outcomes = json.loads(raw["outcomes"])
@@ -35,6 +38,8 @@ def parse_market(raw: dict) -> dict | None:
         return None
 
     resolution = determine_resolution(outcomes, prices)
+    if resolution is None:
+        return None
 
     try:
         no_idx = outcomes.index("No")
@@ -70,8 +75,13 @@ def parse_market(raw: dict) -> dict | None:
 def fetch_resolved_markets(
     categories: list[str] | None = None,
     limit: int | None = None,
+    end_date_max: str | None = None,
 ) -> list[dict]:
-    """Fetch all resolved markets from the Gamma API with pagination."""
+    """Fetch resolved markets from the Gamma API with pagination.
+
+    If end_date_max is provided, only fetches markets with endDate <= that value.
+    Use this to continue collecting older markets from where the last run left off.
+    """
     client = httpx.Client(timeout=30)
     all_markets = []
     offset = 0
@@ -85,8 +95,13 @@ def fetch_resolved_markets(
             "order": "createdAt",
             "ascending": "false",
         }
+        if end_date_max:
+            params["end_date_max"] = end_date_max
 
         response = client.get(f"{GAMMA_API_BASE}/markets", params=params)
+        if response.status_code == 422:
+            print(f"  API rejected offset={offset}, stopping pagination")
+            break
         response.raise_for_status()
         raw_markets = response.json()
 
@@ -96,18 +111,22 @@ def fetch_resolved_markets(
         if not raw_markets:
             break
 
+        page_num = offset // MARKETS_PER_PAGE + 1
+        accepted = 0
         for raw in raw_markets:
             parsed = parse_market(raw)
             if parsed is None:
                 continue
             if categories and parsed["category"] not in categories:
                 continue
+            accepted += 1
             all_markets.append(parsed)
 
             if limit and len(all_markets) >= limit:
                 client.close()
                 return all_markets[:limit]
 
+        print(f"  Page {page_num}: {len(raw_markets)} raw, {accepted} accepted, {len(all_markets)} total")
         offset += MARKETS_PER_PAGE
         time.sleep(0.05)
 

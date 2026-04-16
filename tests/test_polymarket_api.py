@@ -1,7 +1,8 @@
 import json
 from datetime import datetime, timezone
+from unittest.mock import patch, MagicMock
 
-from src.collector.polymarket_api import parse_market, determine_resolution
+from src.collector.polymarket_api import parse_market, determine_resolution, fetch_resolved_markets
 
 SAMPLE_GAMMA_MARKET = {
     "id": "1237864",
@@ -69,6 +70,13 @@ def test_parse_market_yes_resolution():
     assert result["category"] == "political"
     assert result["no_token_id"] == "222222"
 
+def test_parse_market_skips_unresolved():
+    market = {
+        **SAMPLE_GAMMA_MARKET,
+        "outcomePrices": json.dumps(["0.5", "0.5"]),
+    }
+    assert parse_market(market) is None
+
 def test_parse_market_skips_neg_risk():
     market = {**SAMPLE_GAMMA_MARKET, "negRisk": True}
     assert parse_market(market) is None
@@ -81,3 +89,58 @@ def test_parse_market_skips_non_yes_no_outcomes():
         "clobTokenIds": json.dumps(["111", "222"]),
     }
     assert parse_market(market) is None
+
+
+def _make_api_market(condition_id: str, question: str = "Test?") -> dict:
+    return {
+        "id": "999",
+        "conditionId": condition_id,
+        "slug": "test",
+        "question": question,
+        "outcomes": json.dumps(["Yes", "No"]),
+        "outcomePrices": json.dumps(["0", "1"]),
+        "clobTokenIds": json.dumps(["111", "222"]),
+        "active": False,
+        "closed": True,
+        "createdAt": "2024-01-01T00:00:00.000000Z",
+        "closedTime": "2024-06-01 00:00:00+00",
+        "category": None,
+        "negRisk": False,
+    }
+
+
+@patch("src.collector.polymarket_api.time.sleep")
+@patch("src.collector.polymarket_api.httpx.Client")
+def test_fetch_passes_end_date_max_to_api(mock_client_cls, mock_sleep):
+    """end_date_max is forwarded as a query parameter to the API."""
+    mock_response = MagicMock()
+    mock_response.json.side_effect = [[_make_api_market("id_a")], []]
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = mock_response
+    mock_client_cls.return_value = mock_client
+
+    results = fetch_resolved_markets(end_date_max="2026-04-03T00:00:00Z")
+
+    call_params = mock_client.get.call_args_list[0][1]["params"]
+    assert call_params["end_date_max"] == "2026-04-03T00:00:00Z"
+    assert len(results) == 1
+
+
+@patch("src.collector.polymarket_api.time.sleep")
+@patch("src.collector.polymarket_api.httpx.Client")
+def test_fetch_no_end_date_max_by_default(mock_client_cls, mock_sleep):
+    """Without end_date_max, the parameter is not sent to the API."""
+    mock_response = MagicMock()
+    mock_response.json.side_effect = [[_make_api_market("id_a")], []]
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = mock_response
+    mock_client_cls.return_value = mock_client
+
+    fetch_resolved_markets()
+
+    call_params = mock_client.get.call_args_list[0][1]["params"]
+    assert "end_date_max" not in call_params

@@ -18,6 +18,11 @@ STRATEGY_DESCRIPTIONS = {
     "best_price": 'Buys at the lowest "NO" token price observed during the market\'s lifetime. Theoretical upper bound with perfect hindsight.',
 }
 
+SELECTION_MODE_DESCRIPTIONS = {
+    "__earliest_created": 'Deduplicates near-duplicate markets (same question, different dates — e.g. "Will X happen by Jan 15?" vs. "...by Feb 1?"). Within each template group, keeps only the market created earliest, then walks forward: a later market is only added if it starts after all previously kept markets have resolved. Prevents stacking correlated trades on the same underlying question.',
+    "__earliest_deadline": 'Same deduplication as earliest_created, but within each template group prefers the market that resolves soonest (earliest deadline) instead of the one created first. Captures the shortest-dated version of each recurring question.',
+}
+
 
 def get_strategy_description(strategy_label: str) -> str:
     """Return the description for a strategy label like 'threshold_0.85'."""
@@ -175,6 +180,33 @@ def render_thesis_overview():
 def render_strategy_comparison():
     st.header("Strategy Comparison")
 
+    with st.expander("How positions and P&L work", expanded=False):
+        st.markdown(
+            """
+Polymarket binary markets run on Gnosis's Conditional Token Framework. Each
+market mints two ERC-1155 outcome tokens (**Yes** and **No**) that each
+redeem for **$1 USDC** if that outcome wins, **$0** if it loses.
+
+- Pre-resolution, the No token trades between $0 and $1 as a market-implied
+  probability (e.g. $0.85 ≈ 85% chance of No).
+- At resolution it snaps to exactly **$1** (No wins) or **$0** (Yes wins).
+- Each strategy buys **1 No share** per market at some historic entry price
+  and holds to resolution. Per-trade P&L is `exit_price − entry_price`:
+  - Resolves **No** → `1 − entry_price` (profit)
+  - Resolves **Yes** → `−entry_price` (full loss of what you paid)
+
+**Why high win rate ≠ high P&L.** The payouts are asymmetric: entering at
+$0.95 wins $0.05 and loses $0.95. Breakeven win rate equals the average
+entry price, so a strategy that enters at $0.95 needs to win ≥95% of the
+time just to not lose money. Strategies that enter cheap (low threshold,
+early snapshot) win less often but each win pays more — that's where the
+edge usually lives. Compare `Win Rate` to entry price, not to 50%.
+
+**Caveats:** no fees, no slippage, assumes fills at the historic price and
+that you hold all the way to resolution (no early exit).
+            """
+        )
+
     if not latest_run_ids:
         st.warning("No backtest results found. Run a backtest first.")
         return
@@ -239,6 +271,15 @@ def render_strategy_comparison():
 
     st.markdown("### Strategy Descriptions")
     for name, desc in STRATEGY_DESCRIPTIONS.items():
+        st.markdown(f"- **{name}** — {desc}")
+
+    st.markdown("### Selection Mode Suffixes")
+    st.caption(
+        "Suffixes appended to a strategy label (e.g. `threshold_0.85__earliest_created`) "
+        "indicate a market-selection filter applied before running the strategy. "
+        "No suffix = all resolved markets used as-is."
+    )
+    for name, desc in SELECTION_MODE_DESCRIPTIONS.items():
         st.markdown(f"- **{name}** — {desc}")
 
 
