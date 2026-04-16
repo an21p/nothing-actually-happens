@@ -68,19 +68,30 @@ def _select_markets(markets, mode):
     return selected
 
 
-def run_backtest(session: Session, strategy_name: str, params: dict, categories: list[str] | None = None) -> str:
+def run_backtest(
+    session: Session,
+    strategy_name: str,
+    params: dict,
+    categories: list[str] | None = None,
+    selection_mode: str = "none",
+) -> str:
+    if selection_mode not in SELECTION_MODES:
+        raise ValueError(f"Unknown selection mode: {selection_mode}")
+
     strategy_info = STRATEGIES[strategy_name]
     strategy_fn = strategy_info["fn"]
     param_suffix = ""
     if params:
         param_suffix = "_" + "_".join(str(v) for v in params.values())
-    strategy_label = f"{strategy_name}{param_suffix}"
+    selection_suffix = "" if selection_mode == "none" else f"__{selection_mode}"
+    strategy_label = f"{strategy_name}{param_suffix}{selection_suffix}"
     run_id = str(uuid.uuid4())[:8]
 
     query = select(Market).where(Market.resolution.isnot(None))
     if categories:
         query = query.where(Market.category.in_(categories))
     markets = session.execute(query).scalars().all()
+    markets = _select_markets(markets, selection_mode)
 
     for market in markets:
         snapshots = (
