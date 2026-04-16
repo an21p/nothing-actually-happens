@@ -1,4 +1,5 @@
 import argparse
+import re
 import uuid
 
 from sqlalchemy import select
@@ -7,6 +8,31 @@ from sqlalchemy.orm import Session
 from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult
 from src.backtester.strategies import STRATEGIES
+
+
+_MONTH_PATTERN = (
+    r"(?:january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|jan|feb|mar|apr|may|jun|jul|aug|sept|sep|oct|nov|dec)"
+)
+_DATE_PHRASE_RE = re.compile(
+    rf"\b(?:by|on|before|after|until|in|week\s+of)\s+{_MONTH_PATTERN}\.?\s+"
+    rf"\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{2,4}})?",
+    re.IGNORECASE,
+)
+_BARE_MONTH_DATE_RE = re.compile(
+    rf"\b{_MONTH_PATTERN}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{2,4}})?",
+    re.IGNORECASE,
+)
+_NUMERIC_DATE_RE = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _template_key(question: str) -> str:
+    text = _DATE_PHRASE_RE.sub("", question)
+    text = _BARE_MONTH_DATE_RE.sub("", text)
+    text = _NUMERIC_DATE_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip().lower()
+    return text
 
 
 def run_backtest(session: Session, strategy_name: str, params: dict, categories: list[str] | None = None) -> str:
