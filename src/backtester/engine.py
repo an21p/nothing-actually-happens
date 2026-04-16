@@ -35,6 +35,39 @@ def _template_key(question: str) -> str:
     return text
 
 
+SELECTION_MODES = ("none", "earliest_created", "earliest_deadline")
+
+_PRIORITY_KEYS = {
+    "earliest_created": lambda m: (m.created_at, m.resolved_at or m.created_at),
+    "earliest_deadline": lambda m: (m.resolved_at or m.created_at, m.created_at),
+}
+
+
+def _select_markets(markets, mode):
+    if mode == "none":
+        return list(markets)
+    if mode not in _PRIORITY_KEYS:
+        raise ValueError(f"Unknown selection mode: {mode}")
+
+    sort_key = _PRIORITY_KEYS[mode]
+    groups: dict[str, list] = {}
+    for m in markets:
+        groups.setdefault(_template_key(m.question), []).append(m)
+
+    selected = []
+    for group in groups.values():
+        group.sort(key=sort_key)
+        emitted = []
+        for candidate in group:
+            if all(
+                (e.resolved_at or e.created_at) <= candidate.created_at
+                for e in emitted
+            ):
+                emitted.append(candidate)
+        selected.extend(emitted)
+    return selected
+
+
 def run_backtest(session: Session, strategy_name: str, params: dict, categories: list[str] | None = None) -> str:
     strategy_info = STRATEGIES[strategy_name]
     strategy_fn = strategy_info["fn"]
