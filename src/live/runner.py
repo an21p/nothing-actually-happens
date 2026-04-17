@@ -62,13 +62,6 @@ def _apply_sizing(cfg: LiveConfig, entry_price: float, bankroll: float) -> Sizin
         return rule(
             entry_price=entry_price, bankroll=bankroll, shares=cfg.sizing_shares
         )
-    if cfg.sizing_rule == "kelly":
-        return rule(
-            entry_price=entry_price,
-            bankroll=bankroll,
-            win_rate=cfg.kelly_win_rate,
-            kelly_fraction=cfg.kelly_fraction,
-        )
     raise ValueError(f"Unknown sizing rule: {cfg.sizing_rule}")
 
 

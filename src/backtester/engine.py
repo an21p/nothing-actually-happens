@@ -131,14 +131,12 @@ def main():
     parser.add_argument(
         "--sizing",
         type=str,
-        choices=["unit", "fixed_notional", "fixed_shares", "kelly"],
+        choices=["unit", "fixed_notional", "fixed_shares"],
         default="unit",
         help="Position-sizing rule. 'unit' (default) writes per-share profit only.",
     )
     parser.add_argument("--sizing-notional", type=float, default=100.0)
     parser.add_argument("--sizing-shares", type=float, default=100.0)
-    parser.add_argument("--sizing-kelly-win-rate", type=float, default=0.75)
-    parser.add_argument("--sizing-kelly-fraction", type=float, default=0.25)
     parser.add_argument("--bankroll", type=float, default=1_000_000.0)
     args = parser.parse_args()
 
@@ -147,11 +145,6 @@ def main():
         sizing_params = {"notional": args.sizing_notional}
     elif args.sizing == "fixed_shares":
         sizing_params = {"shares": args.sizing_shares}
-    elif args.sizing == "kelly":
-        sizing_params = {
-            "win_rate": args.sizing_kelly_win_rate,
-            "kelly_fraction": args.sizing_kelly_fraction,
-        }
 
     engine = get_engine()
     session = get_session(engine)

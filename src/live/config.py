@@ -12,8 +12,6 @@ class LiveConfig:
     sizing_rule: str
     sizing_notional: float
     sizing_shares: float
-    kelly_win_rate: float
-    kelly_fraction: float
     bankroll_start: float
     max_open_positions: int
     executor: str
@@ -37,11 +35,9 @@ def load_config() -> LiveConfig:
 
     return LiveConfig(
         categories=categories,
-        sizing_rule=os.getenv("LIVE_SIZING_RULE", "fixed_notional"),
-        sizing_notional=float(os.getenv("LIVE_SIZING_NOTIONAL", "100")),
-        sizing_shares=float(os.getenv("LIVE_SIZING_SHARES", "100")),
-        kelly_win_rate=float(os.getenv("LIVE_SIZING_KELLY_WIN_RATE", "0.75")),
-        kelly_fraction=float(os.getenv("LIVE_SIZING_KELLY_FRACTION", "0.25")),
+        sizing_rule=os.getenv("LIVE_SIZING_RULE", "fixed_shares"),
+        sizing_notional=float(os.getenv("LIVE_SIZING_NOTIONAL", "10")),
+        sizing_shares=float(os.getenv("LIVE_SIZING_SHARES", "10")),
         bankroll_start=float(os.getenv("LIVE_BANKROLL_START", "10000")),
         max_open_positions=int(os.getenv("LIVE_MAX_OPEN_POSITIONS", "50")),
         executor=os.getenv("LIVE_EXECUTOR", "paper"),

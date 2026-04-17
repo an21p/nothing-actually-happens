@@ -8,7 +8,7 @@ from sqlalchemy import func
 from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult, Position
 from src.backtester.engine import run_all_strategies, run_backtest
-from src.live.sizing import fixed_notional, fixed_shares, kelly
+from src.live.sizing import fixed_notional, fixed_shares
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 
@@ -246,22 +246,33 @@ def render_strategy_comparison():
             """
 Polymarket binary markets run on Gnosis's Conditional Token Framework. Each
 market mints two ERC-1155 outcome tokens (**Yes** and **No**) that each
-redeem for **$1 USDC** if that outcome wins, **$0** if it loses.
+redeem for **1 USDC** if that outcome wins, **0** if it loses.
 
-- Pre-resolution, the No token trades between $0 and $1 as a market-implied
-  probability (e.g. $0.85 ≈ 85% chance of No).
-- At resolution it snaps to exactly **$1** (No wins) or **$0** (Yes wins).
+- Pre-resolution, the No token trades between 0 and 1 as a market-implied
+  probability (e.g. 0.85 = 85% chance of No).
+- At resolution it snaps to exactly **1** (No wins) or **0** (Yes wins).
 - Each strategy buys **1 No share** per market at some historic entry price
-  and holds to resolution. Per-trade P&L is `exit_price − entry_price`:
-  - Resolves **No** → `1 − entry_price` (profit)
-  - Resolves **Yes** → `−entry_price` (full loss of what you paid)
+  and holds to resolution. Per-trade P&L:
 
-**Why high win rate ≠ high P&L.** The payouts are asymmetric: entering at
-$0.95 wins $0.05 and loses $0.95. Breakeven win rate equals the average
-entry price, so a strategy that enters at $0.95 needs to win ≥95% of the
-time just to not lose money. Strategies that enter cheap (low threshold,
-early snapshot) win less often but each win pays more — that's where the
-edge usually lives. Compare `Win Rate` to entry price, not to 50%.
+```
+profit = exit_price - entry_price
+       = 1 - entry_price   if resolves No   (profit)
+       = -entry_price      if resolves Yes  (full loss)
+```
+
+**Why high win rate does not equal high P&L.** The payouts are asymmetric:
+entering at 0.95 wins 0.05 and loses 0.95. Breakeven win rate equals the
+average entry price, so a strategy that enters at 0.95 needs to win at
+least 95% of the time just to not lose money. Strategies that enter cheap
+(low threshold, early snapshot) win less often but each win pays more —
+that's where the edge usually lives. Compare `Win Rate` to entry price,
+not to 50%.
+
+**Note on sizing.** The totals here assume 1 share per trade — that's a
+neutral view of the raw per-strategy edge. Once you layer real sizing on
+top, *fixed-shares* tends to beat *fixed-notional*, because it allocates
+more dollars to high-priced No markets (which also resolve No more often).
+See the **Sizing Comparison** view for the detailed finding.
 
 **Caveats:** no fees, no slippage, assumes fills at the historic price and
 that you hold all the way to resolution (no early exit).
@@ -726,23 +737,41 @@ def _apply_rule(rule: str, entry_price: float, bankroll: float, cfg: dict) -> fl
         return fixed_shares(
             entry_price=entry_price, bankroll=bankroll, shares=cfg["shares"]
         ).shares
-    if rule == "kelly":
-        return kelly(
-            entry_price=entry_price,
-            bankroll=bankroll,
-            win_rate=cfg["win_rate"],
-            kelly_fraction=cfg["kelly_fraction"],
-        ).shares
     return 0.0
 
 
 def render_sizing_comparison():
     st.header("Sizing Comparison")
     st.caption(
-        "Overlay three cumulative-P&L curves on the same resolved trades: "
-        "fixed notional, fixed shares, and fractional Kelly. "
+        "Overlay cumulative-P&L curves on the same resolved trades for "
+        "fixed-notional vs. fixed-shares sizing. "
         "Picks a backtest run with sizing_rule populated."
     )
+
+    with st.expander("How positions work", expanded=False):
+        st.markdown(
+            """
+Each trade buys No-shares at the historic entry price `p` (in [0, 1]) and
+holds to resolution. Per-share payoff:
+
+```
+Resolves No   -> share pays 1  -> profit = 1 - p
+Resolves Yes  -> share pays 0  -> loss   = p
+```
+
+Sizing rules differ only in **how many shares** you buy per trade:
+
+- **Fixed notional (N dollars)** buys `N / p` shares. Same dollars spent
+  every trade; cheaper No-markets get more shares, pricier ones fewer.
+  Dollar loss per trade is capped at N.
+- **Fixed shares (S)** buys S shares every trade. Capital deployed per
+  trade is `S * p`, so expensive No-markets consume more bankroll; cheap
+  ones consume less. Dollar loss per trade scales with the entry price.
+
+Totals in the summary table are per-share P&L `(exit_price - entry_price)`
+multiplied by the shares that rule would have bought at each entry.
+            """
+        )
 
     strategies = sorted({
         row[0]
@@ -781,16 +810,47 @@ def render_sizing_comparison():
         st.info("No trades for the selected strategy.")
         return
 
-    bankroll = st.number_input("Bankroll (USDC)", value=10_000.0, step=500.0)
-    notional = st.number_input("Fixed notional per trade ($)", value=100.0, step=10.0)
-    shares = st.number_input("Fixed shares per trade", value=100.0, step=10.0)
-    win_rate = st.slider("Kelly win rate", 0.5, 0.99, 0.85, step=0.01)
-    kelly_fraction = st.slider("Kelly fraction", 0.05, 1.0, 0.25, step=0.05)
+    bankroll = st.number_input(
+        "Max spend per trade ($)",
+        value=10.0,
+        step=1.0,
+        help=(
+            "Hard cap on dollars deployed in a single trade. Each sizing rule "
+            "clips its spend to this value if it would otherwise exceed it. "
+            "Not a running balance — there's no deduction across trades."
+        ),
+    )
+
+    st.markdown("**Fixed notional per trade ($)**")
+    st.caption(
+        "Spends exactly this many dollars on each trade. Share count varies "
+        "by No-price: cheaper markets buy more shares, pricier markets fewer. "
+        "With small bets, dollar loss per trade is capped at the notional — "
+        "good for capital-limited accounts."
+    )
+    notional = st.number_input(
+        "Fixed notional per trade ($)",
+        value=10.0,
+        step=1.0,
+        label_visibility="collapsed",
+    )
+
+    st.markdown("**Fixed shares per trade**")
+    st.caption(
+        "Buys exactly this many No-shares on each trade. Dollars deployed "
+        "scale with No-price: a $0.90 No-token costs 9× more than a $0.10 one. "
+        "With small bets, per-trade risk grows when entry prices are high."
+    )
+    shares = st.number_input(
+        "Fixed shares per trade",
+        value=10.0,
+        step=1.0,
+        label_visibility="collapsed",
+    )
 
     rule_cfgs = {
         "fixed_notional": {"notional": notional},
         "fixed_shares": {"shares": shares},
-        "kelly": {"win_rate": win_rate, "kelly_fraction": kelly_fraction},
     }
 
     curves: dict[str, list[dict]] = {rule: [] for rule in rule_cfgs}
@@ -848,6 +908,30 @@ def render_sizing_comparison():
             "Win rate": st.column_config.NumberColumn(format="%.1%%"),
             "Avg notional/trade": st.column_config.NumberColumn(format="$%.2f"),
         },
+    )
+
+    st.markdown("### Finding: why fixed shares tends to outperform")
+    st.markdown(
+        """
+Per-trade math for a No-share bought at entry price `p`:
+
+```
+Win  (resolves No):   profit = 1 - p
+Loss (resolves Yes):  loss   = p
+```
+
+- **Fixed notional (N dollars)** buys `N / p` shares, so it deploys the
+  same dollars everywhere and loses exactly N on every loss.
+- **Fixed shares (S)** deploys `S * p` dollars per trade, so it allocates
+  **more capital on high-priced No markets** and less on cheap ones.
+
+In this dataset, high-`p` No markets (e.g. `p = 0.85`) resolve No far more
+often than 50/50 markets — the crowd's confidence tracks reality. Fixed
+shares therefore **over-weights the highest-conviction, highest-win-rate
+bets**, while fixed notional spreads equal dollars across noisy cheap-No
+markets too. That's the edge: entry price is a soft proxy for win
+probability, and fixed-shares sizing bets in proportion to it.
+        """
     )
 
 

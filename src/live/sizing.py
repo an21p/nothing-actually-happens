@@ -57,39 +57,7 @@ def fixed_shares(
     )
 
 
-def kelly(
-    *,
-    entry_price: float,
-    bankroll: float,
-    win_rate: float,
-    kelly_fraction: float = 1.0,
-) -> SizingResult:
-    # Buying No at price p wins $1 with probability w, loses p with probability 1-w.
-    # Net odds b = (1 - p) / p; Kelly fraction f* = (b*w - (1 - w)) / b.
-    p = entry_price
-    if p <= 0 or p >= 1 or bankroll <= 0:
-        return SizingResult(
-            shares=0.0,
-            notional=0.0,
-            rule="kelly",
-            params={"win_rate": win_rate, "kelly_fraction": kelly_fraction},
-        )
-
-    b = (1.0 - p) / p
-    f_star = (b * win_rate - (1.0 - win_rate)) / b
-    fraction = max(0.0, f_star) * kelly_fraction
-    spend = _cap_notional(fraction * bankroll, bankroll)
-    shares = spend / p
-    return SizingResult(
-        shares=shares,
-        notional=spend,
-        rule="kelly",
-        params={"win_rate": win_rate, "kelly_fraction": kelly_fraction},
-    )
-
-
 SIZING_RULES: dict[str, Callable[..., SizingResult]] = {
     "fixed_notional": fixed_notional,
     "fixed_shares": fixed_shares,
-    "kelly": kelly,
 }

@@ -16,8 +16,6 @@ def _base_config(**overrides) -> LiveConfig:
         sizing_rule="fixed_notional",
         sizing_notional=100.0,
         sizing_shares=100.0,
-        kelly_win_rate=0.75,
-        kelly_fraction=0.25,
         bankroll_start=10_000.0,
         max_open_positions=50,
         executor="paper",
