@@ -123,11 +123,11 @@ view = st.sidebar.radio(
     "View",
     [
         "Thesis Overview",
+        "Live Positions",
         "Strategy Comparison",
+        "Sizing Comparison",
         "Deep Dive",
         "Market Browser",
-        "Live Positions",
-        "Sizing Comparison",
     ],
 )
 
