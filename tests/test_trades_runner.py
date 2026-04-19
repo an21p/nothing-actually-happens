@@ -259,3 +259,21 @@ def test_validate_args_rejects_kalshi_without_credentials(monkeypatch):
     monkeypatch.delenv("KALSHI_API_KEY_SECRET", raising=False)
     with pytest.raises(SystemExit):
         validate_args(parse_args(["--mode", "catchup", "--venues", "kalshi"]))
+
+
+def test_kalshi_fetch_raises_without_credentials(monkeypatch):
+    from src.collector.trades.kalshi import fetch_trades, KalshiConfig
+    monkeypatch.delenv("KALSHI_API_KEY_ID", raising=False)
+    monkeypatch.delenv("KALSHI_API_KEY_SECRET", raising=False)
+    cfg = KalshiConfig.from_env()
+    with pytest.raises(NotImplementedError, match="not configured"):
+        list(fetch_trades(None, cfg))
+
+
+def test_kalshi_fetch_raises_when_configured_but_unimplemented(monkeypatch):
+    from src.collector.trades.kalshi import fetch_trades, KalshiConfig
+    monkeypatch.setenv("KALSHI_API_KEY_ID", "id")
+    monkeypatch.setenv("KALSHI_API_KEY_SECRET", "secret")
+    cfg = KalshiConfig.from_env()
+    with pytest.raises(NotImplementedError, match="not yet implemented"):
+        list(fetch_trades(None, cfg))
