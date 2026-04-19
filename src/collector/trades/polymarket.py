@@ -107,6 +107,115 @@ def event_to_trade(
     }
 
 
+from src.collector.polygon_chain import (
+    ORDER_FILLED_ABI,
+    CTF_EXCHANGE_ADDRESS,
+    estimate_block_for_timestamp,
+)
+
+BLOCK_CHUNK = 10_000
+CHUNK_SLEEP_SECONDS = 0.1
+MAX_RETRIES = 3
+
+
+def _build_web3():
+    try:
+        from web3 import Web3
+    except ImportError:
+        logger.warning("web3 not installed; Polymarket trade fetching disabled")
+        return None
+    rpc_url = os.getenv("POLYGON_RPC_URL", "https://polygon-rpc.com")
+    return Web3(Web3.HTTPProvider(rpc_url))
+
+
+def _get_logs_with_retry(contract, from_block, to_block):
+    delay = 1.0
+    last_exc = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            return contract.events.OrderFilled.get_logs(
+                fromBlock=from_block, toBlock=to_block
+            )
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(delay)
+                delay *= 2
+    logger.warning(
+        "get_logs failed after %d retries (%d-%d): %s",
+        MAX_RETRIES, from_block, to_block, last_exc,
+    )
+    return []
+
+
+def fetch_trades(
+    market,
+    yes_token_id: str,
+    no_token_id: str,
+    from_block: int | None = None,
+    to_block: int | None = None,
+    w3=None,
+) -> Iterator[dict]:
+    """Yield Trade dicts for all OrderFilled events touching the market's tokens.
+
+    `w3` is injectable for tests. If omitted, constructs one from POLYGON_RPC_URL
+    (or the public default). Returns empty if web3 is missing or disconnected.
+    """
+    if w3 is None:
+        w3 = _build_web3()
+    if w3 is None or not w3.is_connected():
+        logger.warning("w3 unavailable; yielding no trades for %s", market.id)
+        return
+
+    try:
+        from web3 import Web3 as _W3
+        address = _W3.to_checksum_address(CTF_EXCHANGE_ADDRESS)
+    except ImportError:
+        address = CTF_EXCHANGE_ADDRESS
+
+    contract = w3.eth.contract(address=address, abi=ORDER_FILLED_ABI)
+
+    latest_block = w3.eth.block_number
+    latest_ts = float(w3.eth.get_block(latest_block)["timestamp"])
+
+    fb = from_block if from_block is not None else estimate_block_for_timestamp(
+        market.created_at.timestamp(), latest_block, latest_ts
+    )
+    tb = to_block if to_block is not None else (
+        estimate_block_for_timestamp(
+            market.resolved_at.timestamp(), latest_block, latest_ts
+        ) if market.resolved_at else latest_block
+    )
+
+    yes_int = int(yes_token_id)
+    no_int = int(no_token_id)
+
+    for chunk_start in range(fb, tb + 1, BLOCK_CHUNK):
+        chunk_end = min(chunk_start + BLOCK_CHUNK - 1, tb)
+        events = _get_logs_with_retry(contract, chunk_start, chunk_end)
+
+        relevant = [
+            e for e in events
+            if e["args"]["makerAssetId"] in (yes_int, no_int)
+            or e["args"]["takerAssetId"] in (yes_int, no_int)
+        ]
+        if not relevant:
+            time.sleep(CHUNK_SLEEP_SECONDS)
+            continue
+
+        ts_cache: dict[int, float] = {}
+        for ev in relevant:
+            bn = ev["blockNumber"]
+            if bn not in ts_cache:
+                ts_cache[bn] = float(w3.eth.get_block(bn)["timestamp"])
+            try:
+                yield event_to_trade(ev, yes_token_id, no_token_id, market.id, ts_cache[bn])
+            except ValueError as exc:
+                logger.warning("skip malformed event in %s: %s", market.id, exc)
+
+        time.sleep(CHUNK_SLEEP_SECONDS)
+
+
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 
 

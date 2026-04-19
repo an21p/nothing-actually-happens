@@ -219,3 +219,147 @@ def test_fetch_yes_token_id_returns_none_on_http_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
     assert fetch_yes_token_id("0xmarket") is None
+
+
+from types import SimpleNamespace
+
+
+class _FakeContractEvent:
+    def __init__(self, logs_per_chunk):
+        self._chunks = iter(logs_per_chunk)
+
+    def get_logs(self, fromBlock, toBlock):  # noqa: N803
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            return []
+
+
+class _FakeContractEvents:
+    def __init__(self, logs_per_chunk):
+        self.OrderFilled = _FakeContractEvent(logs_per_chunk)
+
+
+class _FakeContract:
+    def __init__(self, logs_per_chunk):
+        self.events = _FakeContractEvents(logs_per_chunk)
+
+
+class _FakeEth:
+    def __init__(self, logs_per_chunk, block_timestamps, latest_block):
+        self._contract = _FakeContract(logs_per_chunk)
+        self.block_number = latest_block
+        self._ts = block_timestamps
+
+    def contract(self, address=None, abi=None):
+        return self._contract
+
+    def get_block(self, n):
+        return {"timestamp": self._ts.get(n, 1704153600)}
+
+
+class _FakeWeb3:
+    def __init__(self, logs_per_chunk, block_timestamps=None, latest=60_000_000, connected=True):
+        self.eth = _FakeEth(logs_per_chunk, block_timestamps or {}, latest)
+        self._connected = connected
+
+    def is_connected(self):
+        return self._connected
+
+
+def _sample_event(maker_asset, taker_asset, maker_amt, taker_amt, block=50_000_000, log_idx=0, tx="0xaa"):
+    return {
+        "args": {
+            "orderHash": b"\x01" * 32,
+            "maker": "0xMAKER",
+            "taker": "0xTAKER",
+            "makerAssetId": maker_asset,
+            "takerAssetId": taker_asset,
+            "makerAmountFilled": maker_amt,
+            "takerAmountFilled": taker_amt,
+            "fee": 0,
+        },
+        "transactionHash": bytes.fromhex(tx[2:] + "00" * (32 - len(tx[2:]) // 2)),
+        "logIndex": log_idx,
+        "blockNumber": block,
+    }
+
+
+def test_fetch_trades_yields_mapped_trades(session):
+    from src.collector.trades.polymarket import fetch_trades
+    from src.storage.models import Market
+
+    market = Market(
+        id="0xmarket",
+        question="q",
+        category="political",
+        no_token_id=NO_ID,
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        resolved_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add(market); session.commit()
+
+    ev = _sample_event(0, int(NO_ID), 150_000, 1_000_000, block=50_000_010)
+    fake = _FakeWeb3(
+        logs_per_chunk=[[ev]],
+        block_timestamps={50_000_010: 1704153600},
+        latest=50_000_020,
+    )
+
+    trades = list(fetch_trades(
+        market, yes_token_id=YES_ID, no_token_id=NO_ID,
+        from_block=50_000_000, to_block=50_000_020,
+        w3=fake,
+    ))
+    assert len(trades) == 1
+    assert trades[0]["market_id"] == "0xmarket"
+    assert trades[0]["side"] == "sell_no"
+
+
+def test_fetch_trades_returns_empty_when_disconnected(session):
+    from src.collector.trades.polymarket import fetch_trades
+    from src.storage.models import Market
+
+    market = Market(
+        id="0xmarket",
+        question="q",
+        category="political",
+        no_token_id=NO_ID,
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        resolved_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add(market); session.commit()
+
+    fake = _FakeWeb3(logs_per_chunk=[], connected=False)
+    trades = list(fetch_trades(
+        market, yes_token_id=YES_ID, no_token_id=NO_ID,
+        from_block=50_000_000, to_block=50_000_020,
+        w3=fake,
+    ))
+    assert trades == []
+
+
+def test_fetch_trades_filters_unrelated_asset(session):
+    from src.collector.trades.polymarket import fetch_trades
+    from src.storage.models import Market
+
+    market = Market(
+        id="0xmarket", question="q", category="political",
+        no_token_id=NO_ID,
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        resolved_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add(market); session.commit()
+
+    unrelated = _sample_event(0, 999_999_999, 500_000, 1_000_000, block=50_000_011)
+    fake = _FakeWeb3(
+        logs_per_chunk=[[unrelated]],
+        block_timestamps={50_000_011: 1704153600},
+        latest=50_000_020,
+    )
+    trades = list(fetch_trades(
+        market, yes_token_id=YES_ID, no_token_id=NO_ID,
+        from_block=50_000_000, to_block=50_000_020,
+        w3=fake,
+    ))
+    assert trades == []
