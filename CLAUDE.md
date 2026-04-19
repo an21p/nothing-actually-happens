@@ -12,7 +12,7 @@ This project uses **uv**. Prefix Python commands with `uv run` (creates/uses `.v
 
 ```bash
 # Collect resolved markets + price history into data/polymarket.db (iterative — resumes from earliest collected market)
-uv run python -m src.collector.runner                          # defaults: geopolitical,political,culture
+uv run python -m src.collector.runner                          # defaults: political,geopolitical
 uv run python -m src.collector.runner --limit 100              # cap fetched markets for quick iteration
 uv run python -m src.collector.runner --categories political   # single category
 uv run python -m src.collector.runner --enrich-onchain         # ALSO pull on-chain trades via Polygon RPC (slow)

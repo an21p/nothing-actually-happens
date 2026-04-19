@@ -113,7 +113,7 @@ def collect(
 
 def main():
     parser = argparse.ArgumentParser(description="Collect Polymarket data")
-    parser.add_argument("--categories", type=str, default="geopolitical,political,culture", help="Comma-separated categories (default: geopolitical,political,culture)")
+    parser.add_argument("--categories", type=str, default="political,geopolitical", help="Comma-separated categories (default: political,geopolitical)")
     parser.add_argument("--limit", type=int, default=None, help="Max number of markets to fetch")
     parser.add_argument("--enrich-onchain", action="store_true", help="Also fetch on-chain price data from Polygon (slow)")
     args = parser.parse_args()
