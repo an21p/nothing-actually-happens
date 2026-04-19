@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, DateTime, Text, ForeignKey, Integer
+from sqlalchemy import String, Float, DateTime, Text, ForeignKey, Integer, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -90,3 +90,40 @@ class Position(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     market: Mapped["Market"] = relationship(back_populates="positions")
+
+
+class Trade(Base):
+    __tablename__ = "trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_id: Mapped[str] = mapped_column(ForeignKey("markets.id"))
+    venue: Mapped[str] = mapped_column(String)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    price: Mapped[float] = mapped_column(Float)
+    size_shares: Mapped[float] = mapped_column(Float)
+    usdc_notional: Mapped[float] = mapped_column(Float)
+    side: Mapped[str] = mapped_column(String)
+    is_yes_token: Mapped[bool] = mapped_column(Boolean)
+
+    tx_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    log_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    block_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    maker_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    taker_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    order_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    maker_asset_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    taker_asset_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    fee: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    kalshi_trade_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    raw_event_json: Mapped[str] = mapped_column(Text)
+
+    market: Mapped["Market"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("venue", "tx_hash", "log_index", name="uq_trade_onchain"),
+        UniqueConstraint("venue", "kalshi_trade_id", name="uq_trade_kalshi"),
+        Index("ix_trades_market_timestamp", "market_id", "timestamp"),
+        Index("ix_trades_venue_timestamp", "venue", "timestamp"),
+    )
