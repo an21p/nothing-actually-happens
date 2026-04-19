@@ -86,3 +86,126 @@ def cross_market_daily_volume(session: Session, market_ids: list[str]) -> list[d
     for ts, notional in rows:
         buckets[ts.date()] = buckets.get(ts.date(), 0.0) + (notional or 0.0)
     return [{"date": d, "notional": v} for d, v in sorted(buckets.items())]
+
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+
+def render(session: Session, selected_categories: list[str], date_range) -> None:
+    st.header("Trades — Per-fill tape")
+
+    markets = markets_with_trades(session)
+    if not markets:
+        st.info(
+            "No trades collected yet. Run "
+            "`uv run python -m src.collector.trades.runner --mode backfill --pilot 5`."
+        )
+        return
+
+    # Apply sidebar category filter
+    markets = [m for m in markets if m.category in selected_categories]
+    if not markets:
+        st.info("No trades match your category filter.")
+        return
+
+    market_labels = {m.id: f"{m.question[:80]} — {m.category}" for m in markets}
+    selected_id = st.selectbox(
+        "Market",
+        options=[m.id for m in markets],
+        format_func=lambda mid: market_labels[mid],
+    )
+    selected_market = next(m for m in markets if m.id == selected_id)
+
+    st.markdown(f"**Question:** {selected_market.question}")
+    if selected_market.source_url:
+        st.markdown(f"[View on Polymarket]({selected_market.source_url})")
+    st.markdown(f"**Resolution:** {selected_market.resolution or '—'}")
+
+    trades = recent_trades(session, selected_id, limit=5000)
+    if not trades:
+        st.info("No trades for this market.")
+        return
+
+    df = pd.DataFrame([{
+        "timestamp": t.timestamp,
+        "price": t.price,
+        "size_shares": t.size_shares,
+        "usdc_notional": t.usdc_notional,
+        "side": t.side,
+        "taker": (t.taker_address or "")[:10],
+    } for t in trades]).sort_values("timestamp")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Trades", f"{len(df):,}")
+    col2.metric("Total notional", f"${df['usdc_notional'].sum():,.0f}")
+    col3.metric("Total shares", f"{df['size_shares'].sum():,.0f}")
+    col4.metric("VWAP", f"${(df['usdc_notional'].sum() / df['size_shares'].sum()):.4f}"
+                if df['size_shares'].sum() else "—")
+
+    # Scatter: price over time, colored by side, sized by shares
+    st.subheader("Price over time")
+    fig_price = px.scatter(
+        df, x="timestamp", y="price", color="side", size="size_shares",
+        hover_data=["usdc_notional"], title=None,
+    )
+    fig_price.update_yaxes(range=[0, 1])
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # Daily volume histogram
+    st.subheader("Daily volume")
+    vol = daily_volume(session, selected_id)
+    vol_df = pd.DataFrame(vol)
+    if not vol_df.empty:
+        fig_vol = px.bar(vol_df, x="date", y="notional",
+                         labels={"notional": "USDC notional"})
+        st.plotly_chart(fig_vol, use_container_width=True)
+
+    # Cumulative notional vs price
+    st.subheader("Cumulative notional vs price")
+    cum_df = df.copy()
+    cum_df["cum_notional"] = cum_df["usdc_notional"].cumsum()
+    fig_cum = px.line(cum_df, x="timestamp", y="cum_notional",
+                      labels={"cum_notional": "Cumulative USDC notional"})
+    st.plotly_chart(fig_cum, use_container_width=True)
+
+    # Trade ladder (last 50)
+    st.subheader("Most recent trades")
+    ladder = df.sort_values("timestamp", ascending=False).head(50)
+    st.dataframe(
+        ladder,
+        use_container_width=True, hide_index=True,
+        column_config={
+            "price": st.column_config.NumberColumn(format="$%.4f"),
+            "size_shares": st.column_config.NumberColumn(format="%.2f"),
+            "usdc_notional": st.column_config.NumberColumn(format="$%.2f"),
+            "timestamp": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm:ss"),
+        },
+    )
+
+    # Cross-market section
+    st.markdown("---")
+
+    all_market_ids = [m.id for m in markets]
+
+    # Cross-market: total daily volume across all collected (+ filtered) markets
+    st.subheader("Total daily volume across collected markets")
+    cross = cross_market_daily_volume(session, all_market_ids)
+    if cross:
+        cross_df = pd.DataFrame(cross)
+        fig_cross = px.line(cross_df, x="date", y="notional",
+                            labels={"notional": "USDC notional"})
+        st.plotly_chart(fig_cross, use_container_width=True)
+
+    # Cross-market: top markets by notional
+    st.subheader("Top markets by notional (all collected)")
+    top = top_markets_by_notional(session, limit=10)
+    if top:
+        top_df = pd.DataFrame(top)
+        labels = {m.id: m.question[:60] for m in markets}
+        top_df["question"] = top_df["market_id"].map(lambda mid: labels.get(mid, mid))
+        fig_top = px.bar(top_df, x="question", y="total_notional",
+                         labels={"total_notional": "Total USDC notional"})
+        fig_top.update_xaxes(tickangle=-30)
+        st.plotly_chart(fig_top, use_container_width=True)
