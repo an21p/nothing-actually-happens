@@ -9,6 +9,7 @@ from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult, Position
 from src.backtester.engine import run_all_strategies, run_backtest
 from src.live.sizing import fixed_notional, fixed_shares
+from src.dashboard import trades_tab
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 
@@ -128,6 +129,7 @@ view = st.sidebar.radio(
         "Sizing Comparison",
         "Deep Dive",
         "Market Browser",
+        "Trades",
     ],
 )
 
@@ -949,5 +951,7 @@ elif view == "Live Positions":
     render_live_positions()
 elif view == "Sizing Comparison":
     render_sizing_comparison()
+elif view == "Trades":
+    trades_tab.render(session, selected_categories, date_range)
 
 session.close()
