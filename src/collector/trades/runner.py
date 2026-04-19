@@ -178,3 +178,81 @@ def run_catchup(
 
         results[market_id] = written
     return results
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Polymarket / Kalshi trade-tape collector")
+    p.add_argument("--mode", required=True, choices=["backfill", "catchup"])
+    p.add_argument("--pilot", type=int, default=None,
+                   help="(backfill) pick top-N most-recently-resolved markets")
+    p.add_argument("--market-ids", type=str, default=None,
+                   help="(backfill) comma-separated explicit market ids")
+    p.add_argument("--venues", type=str, default="polymarket",
+                   help="Comma-separated venues (default: polymarket)")
+    p.add_argument("--db", type=str, default=None, help="Override DB path")
+    ns = p.parse_args(argv)
+    if ns.market_ids:
+        ns.market_ids = [s for s in ns.market_ids.split(",") if s]
+    ns.venues = [v.strip() for v in ns.venues.split(",") if v.strip()]
+    return ns
+
+
+def validate_args(ns: argparse.Namespace) -> None:
+    import os
+    if ns.mode == "backfill":
+        has_pilot = ns.pilot is not None
+        has_ids = bool(ns.market_ids)
+        if has_pilot == has_ids:
+            print("error: --mode backfill requires exactly one of --pilot or --market-ids",
+                  file=sys.stderr)
+            sys.exit(1)
+    if "kalshi" in ns.venues:
+        if not (os.getenv("KALSHI_API_KEY_ID") and os.getenv("KALSHI_API_KEY_SECRET")):
+            print("error: --venues kalshi requires KALSHI_API_KEY_ID and KALSHI_API_KEY_SECRET",
+                  file=sys.stderr)
+            sys.exit(1)
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    ns = parse_args(argv)
+    validate_args(ns)
+
+    engine = get_engine(ns.db)
+    session = get_session(engine)
+
+    try:
+        for venue in ns.venues:
+            if venue == "polymarket":
+                fetch_fn = polymarket.fetch_trades
+                yes_fn = polymarket.fetch_yes_token_id
+            elif venue == "kalshi":
+                from src.collector.trades import kalshi
+                cfg = kalshi.KalshiConfig.from_env()
+                fetch_fn = lambda market, **kw: kalshi.fetch_trades(market, cfg)  # noqa: E731
+                yes_fn = lambda _mid: None  # kalshi path raises before this is used  # noqa: E731
+            else:
+                print(f"error: unknown venue {venue!r}", file=sys.stderr)
+                return 1
+
+            if ns.mode == "backfill":
+                ids = ns.market_ids or select_pilot_markets(session, ns.pilot)
+                if not ids:
+                    print("no pilot markets available", file=sys.stderr)
+                    continue
+                # Verify explicit ids exist
+                for mid in ids:
+                    if session.get(Market, mid) is None:
+                        print(f"error: unknown market id {mid!r}", file=sys.stderr)
+                        return 1
+                run_backfill(session, ids, fetch_fn, yes_fn)
+            else:
+                run_catchup(session, fetch_fn, yes_fn)
+    finally:
+        session.close()
+        engine.dispose()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

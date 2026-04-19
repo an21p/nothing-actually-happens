@@ -218,3 +218,44 @@ def test_run_catchup_skips_unresolved_markets_not_in_trades(session):
 
     run_catchup(session, fetch_trades_fn=fetch, yes_token_fn=lambda _: "1111")
     assert called == []
+
+
+def test_parse_args_backfill_pilot():
+    from src.collector.trades.runner import parse_args
+    args = parse_args(["--mode", "backfill", "--pilot", "5"])
+    assert args.mode == "backfill"
+    assert args.pilot == 5
+    assert args.market_ids is None
+    assert args.venues == ["polymarket"]
+
+
+def test_parse_args_backfill_market_ids():
+    from src.collector.trades.runner import parse_args
+    args = parse_args(["--mode", "backfill", "--market-ids", "0xa,0xb"])
+    assert args.market_ids == ["0xa", "0xb"]
+
+
+def test_parse_args_catchup_defaults():
+    from src.collector.trades.runner import parse_args
+    args = parse_args(["--mode", "catchup"])
+    assert args.mode == "catchup"
+
+
+def test_validate_args_requires_pilot_xor_market_ids_in_backfill():
+    from src.collector.trades.runner import parse_args, validate_args
+
+    with pytest.raises(SystemExit):
+        validate_args(parse_args(["--mode", "backfill"]))
+
+    with pytest.raises(SystemExit):
+        validate_args(parse_args([
+            "--mode", "backfill", "--pilot", "5", "--market-ids", "0xa",
+        ]))
+
+
+def test_validate_args_rejects_kalshi_without_credentials(monkeypatch):
+    from src.collector.trades.runner import parse_args, validate_args
+    monkeypatch.delenv("KALSHI_API_KEY_ID", raising=False)
+    monkeypatch.delenv("KALSHI_API_KEY_SECRET", raising=False)
+    with pytest.raises(SystemExit):
+        validate_args(parse_args(["--mode", "catchup", "--venues", "kalshi"]))
