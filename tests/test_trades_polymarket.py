@@ -155,3 +155,67 @@ def test_event_to_trade_raises_when_asset_neither_yes_nor_no():
     })
     with pytest.raises(ValueError, match="matches neither YES nor NO"):
         event_to_trade(ev, YES_ID, NO_ID, "0xm1", TS)
+
+
+import httpx
+import json as _json
+
+
+def test_fetch_yes_token_id_happy_path(monkeypatch):
+    from src.collector.trades.polymarket import fetch_yes_token_id
+
+    fake_payload = {
+        "outcomes": _json.dumps(["Yes", "No"]),
+        "clobTokenIds": _json.dumps(["111", "222"]),
+    }
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return fake_payload
+
+    def fake_get(url, timeout=None):
+        assert url.endswith("/markets/0xmarket")
+        return FakeResp()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert fetch_yes_token_id("0xmarket") == "111"
+
+
+def test_fetch_yes_token_id_no_first(monkeypatch):
+    from src.collector.trades.polymarket import fetch_yes_token_id
+
+    fake_payload = {
+        "outcomes": _json.dumps(["No", "Yes"]),
+        "clobTokenIds": _json.dumps(["222", "111"]),
+    }
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return fake_payload
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: FakeResp())
+    assert fetch_yes_token_id("0xmarket") == "111"
+
+
+def test_fetch_yes_token_id_returns_none_on_malformed(monkeypatch):
+    from src.collector.trades.polymarket import fetch_yes_token_id
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"outcomes": "not-json"}
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: FakeResp())
+    assert fetch_yes_token_id("0xbad") is None
+
+
+def test_fetch_yes_token_id_returns_none_on_http_error(monkeypatch):
+    from src.collector.trades.polymarket import fetch_yes_token_id
+
+    def fake_get(url, timeout=None):
+        raise httpx.ConnectError("no network")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert fetch_yes_token_id("0xmarket") is None

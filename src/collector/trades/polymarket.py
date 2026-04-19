@@ -4,6 +4,7 @@ Reuses the CTF Exchange ABI and block-estimation helpers from
 src/collector/polygon_chain.py. Produces per-fill Trade dicts suitable for
 insertion into the `trades` table.
 """
+import httpx
 import json
 import logging
 import os
@@ -104,3 +105,37 @@ def event_to_trade(
         "kalshi_trade_id": None,
         "raw_event_json": _serialize_args(args),
     }
+
+
+GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+
+
+def fetch_yes_token_id(market_id: str) -> str | None:
+    """Look up the YES clobTokenId for a market via Gamma API.
+
+    Returns None if the market is missing, malformed, or unreachable.
+    """
+    try:
+        resp = httpx.get(f"{GAMMA_API_BASE}/markets/{market_id}", timeout=30)
+        resp.raise_for_status()
+        raw = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("fetch_yes_token_id: request failed for %s: %s", market_id, exc)
+        return None
+
+    try:
+        outcomes = json.loads(raw["outcomes"])
+        token_ids = json.loads(raw["clobTokenIds"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning("fetch_yes_token_id: malformed payload for %s: %s", market_id, exc)
+        return None
+
+    if len(outcomes) != 2 or len(token_ids) != 2:
+        return None
+
+    try:
+        yes_idx = [o.lower() for o in outcomes].index("yes")
+    except ValueError:
+        return None
+
+    return token_ids[yes_idx]
