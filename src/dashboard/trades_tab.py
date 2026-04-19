@@ -1,5 +1,5 @@
 """Streamlit "Trades" tab — trade-tape exploration views."""
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -7,17 +7,30 @@ from sqlalchemy.orm import Session
 from src.storage.models import Market, Trade
 
 
-def markets_with_trades(session: Session) -> list[Market]:
+def _apply_trade_date_filter(query, date_range):
+    """Apply a (start_date, end_date) date range tuple to a query filtered on Trade.timestamp.
+
+    date_range is None or a 2-tuple of datetime.date. When set, start is inclusive at 00:00 UTC
+    and end is inclusive through 23:59:59 UTC.
+    """
+    if date_range and len(date_range) == 2:
+        start, end = date_range
+        query = query.filter(Trade.timestamp >= datetime(start.year, start.month, start.day, tzinfo=timezone.utc))
+        query = query.filter(Trade.timestamp <= datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc))
+    return query
+
+
+def markets_with_trades(session: Session, date_range=None) -> list[Market]:
     """Markets that have at least one row in trades, ordered by most-recent trade."""
-    subq = (
+    subq_base = (
         session.query(
             Trade.market_id.label("mid"),
             func.max(Trade.timestamp).label("latest"),
         )
         .filter(Trade.venue == "polymarket")
-        .group_by(Trade.market_id)
-        .subquery()
     )
+    subq_base = _apply_trade_date_filter(subq_base, date_range)
+    subq = subq_base.group_by(Trade.market_id).subquery()
     rows = (
         session.query(Market)
         .join(subq, Market.id == subq.c.mid)
@@ -27,13 +40,14 @@ def markets_with_trades(session: Session) -> list[Market]:
     return rows
 
 
-def daily_volume(session: Session, market_id: str) -> list[dict]:
+def daily_volume(session: Session, market_id: str, date_range=None) -> list[dict]:
     """Return [{date, notional, shares, trades}] per day for the market."""
-    rows = (
+    q = (
         session.query(Trade)
         .filter(Trade.market_id == market_id, Trade.venue == "polymarket")
-        .all()
     )
+    q = _apply_trade_date_filter(q, date_range)
+    rows = q.all()
     buckets: dict[date, dict] = {}
     for t in rows:
         d = t.timestamp.date()
@@ -44,18 +58,21 @@ def daily_volume(session: Session, market_id: str) -> list[dict]:
     return sorted(buckets.values(), key=lambda r: r["date"])
 
 
-def top_markets_by_notional(session: Session, limit: int = 10) -> list[dict]:
-    rows = (
+def top_markets_by_notional(session: Session, limit: int = 10, date_range=None) -> list[dict]:
+    q = (
         session.query(
             Trade.market_id,
             func.sum(Trade.usdc_notional).label("total"),
             func.count(Trade.id).label("n"),
         )
         .filter(Trade.venue == "polymarket")
-        .group_by(Trade.market_id)
-        .order_by(func.sum(Trade.usdc_notional).desc())
-        .limit(limit)
-        .all()
+    )
+    q = _apply_trade_date_filter(q, date_range)
+    rows = (
+        q.group_by(Trade.market_id)
+         .order_by(func.sum(Trade.usdc_notional).desc())
+         .limit(limit)
+         .all()
     )
     return [
         {"market_id": r[0], "total_notional": float(r[1] or 0.0), "trade_count": int(r[2])}
@@ -63,25 +80,25 @@ def top_markets_by_notional(session: Session, limit: int = 10) -> list[dict]:
     ]
 
 
-def recent_trades(session: Session, market_id: str, limit: int = 50) -> list[Trade]:
-    return (
+def recent_trades(session: Session, market_id: str, limit: int = 50, date_range=None) -> list[Trade]:
+    q = (
         session.query(Trade)
         .filter(Trade.market_id == market_id, Trade.venue == "polymarket")
-        .order_by(Trade.timestamp.desc())
-        .limit(limit)
-        .all()
     )
+    q = _apply_trade_date_filter(q, date_range)
+    return q.order_by(Trade.timestamp.desc()).limit(limit).all()
 
 
-def cross_market_daily_volume(session: Session, market_ids: list[str]) -> list[dict]:
+def cross_market_daily_volume(session: Session, market_ids: list[str], date_range=None) -> list[dict]:
     """Return [{date, notional}] summed across the given markets per day."""
     if not market_ids:
         return []
-    rows = (
+    q = (
         session.query(Trade.timestamp, Trade.usdc_notional)
         .filter(Trade.venue == "polymarket", Trade.market_id.in_(market_ids))
-        .all()
     )
+    q = _apply_trade_date_filter(q, date_range)
+    rows = q.all()
     buckets: dict[date, float] = {}
     for ts, notional in rows:
         buckets[ts.date()] = buckets.get(ts.date(), 0.0) + (notional or 0.0)
@@ -96,7 +113,7 @@ import streamlit as st
 def render(session: Session, selected_categories: list[str], date_range) -> None:
     st.header("Trades — Per-fill tape")
 
-    markets = markets_with_trades(session)
+    markets = markets_with_trades(session, date_range=date_range)
     if not markets:
         st.info(
             "No trades collected yet. Run "
@@ -123,7 +140,7 @@ def render(session: Session, selected_categories: list[str], date_range) -> None
         st.markdown(f"[View on Polymarket]({selected_market.source_url})")
     st.markdown(f"**Resolution:** {selected_market.resolution or '—'}")
 
-    trades = recent_trades(session, selected_id, limit=5000)
+    trades = recent_trades(session, selected_id, limit=5000, date_range=date_range)
     if not trades:
         st.info("No trades for this market.")
         return
@@ -155,7 +172,7 @@ def render(session: Session, selected_categories: list[str], date_range) -> None
 
     # Daily volume histogram
     st.subheader("Daily volume")
-    vol = daily_volume(session, selected_id)
+    vol = daily_volume(session, selected_id, date_range=date_range)
     vol_df = pd.DataFrame(vol)
     if not vol_df.empty:
         fig_vol = px.bar(vol_df, x="date", y="notional",
@@ -191,7 +208,7 @@ def render(session: Session, selected_categories: list[str], date_range) -> None
 
     # Cross-market: total daily volume across all collected (+ filtered) markets
     st.subheader("Total daily volume across collected markets")
-    cross = cross_market_daily_volume(session, all_market_ids)
+    cross = cross_market_daily_volume(session, all_market_ids, date_range=date_range)
     if cross:
         cross_df = pd.DataFrame(cross)
         fig_cross = px.line(cross_df, x="date", y="notional",
@@ -200,7 +217,7 @@ def render(session: Session, selected_categories: list[str], date_range) -> None
 
     # Cross-market: top markets by notional
     st.subheader("Top markets by notional (all collected)")
-    top = top_markets_by_notional(session, limit=10)
+    top = top_markets_by_notional(session, limit=10, date_range=date_range)
     if top:
         top_df = pd.DataFrame(top)
         labels = {m.id: m.question[:60] for m in markets}
