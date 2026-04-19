@@ -32,6 +32,7 @@ class Market(Base):
         back_populates="market"
     )
     positions: Mapped[list["Position"]] = relationship(back_populates="market")
+    trades: Mapped[list["Trade"]] = relationship(back_populates="market")
 
 
 class PriceSnapshot(Base):
@@ -119,7 +120,7 @@ class Trade(Base):
 
     raw_event_json: Mapped[str] = mapped_column(Text)
 
-    market: Mapped["Market"] = relationship()
+    market: Mapped["Market"] = relationship(back_populates="trades")
 
     __table_args__ = (
         UniqueConstraint("venue", "tx_hash", "log_index", name="uq_trade_onchain"),
