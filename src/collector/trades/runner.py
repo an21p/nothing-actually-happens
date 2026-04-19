@@ -114,20 +114,24 @@ def run_backfill(
 
 def _catchup_market_ids(session: Session) -> list[str]:
     """Union of (markets with existing trades) and (resolved filtered markets w/ no trades yet)."""
-    with_trades = {
-        r[0] for r in session.query(Trade.market_id)
+    with_trades_subq = (
+        session.query(Trade.market_id)
         .filter(Trade.venue == "polymarket")
-        .distinct().all()
+        .distinct()
+        .subquery()
+    )
+    with_trades = {
+        r[0] for r in session.query(with_trades_subq).all()
     }
-    new_resolved = {
-        r[0] for r in session.query(Market.id)
+    new_resolved_rows = (
+        session.query(Market.id)
         .filter(Market.resolution.isnot(None))
         .filter(Market.resolved_at.isnot(None))
         .filter(Market.category.in_(ALLOWED_CATEGORIES))
+        .filter(Market.id.notin_(session.query(with_trades_subq.c.market_id)))
         .all()
-        if r[0] not in with_trades
-    }
-    return sorted(with_trades | new_resolved)
+    )
+    return sorted(with_trades | {r[0] for r in new_resolved_rows})
 
 
 def run_catchup(

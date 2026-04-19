@@ -277,3 +277,42 @@ def test_kalshi_fetch_raises_when_configured_but_unimplemented(monkeypatch):
     cfg = KalshiConfig.from_env()
     with pytest.raises(NotImplementedError, match="not yet implemented"):
         list(fetch_trades(None, cfg))
+
+
+def test_catchup_market_ids_unions_with_trades_and_new_resolved(session):
+    from src.collector.trades.runner import _catchup_market_ids
+
+    # Market with existing trade (category irrelevant for with_trades path)
+    _seed_market(session, "0xhastrades",
+        created=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        resolved=datetime(2024, 6, 1, tzinfo=timezone.utc))
+    session.add(Trade(
+        market_id="0xhastrades", venue="polymarket",
+        timestamp=datetime(2024, 3, 1, tzinfo=timezone.utc),
+        price=0.5, size_shares=1.0, usdc_notional=0.5,
+        side="buy_no", is_yes_token=False,
+        tx_hash="0x" + "a" * 64, log_index=0, block_number=1,
+        raw_event_json="{}",
+    ))
+
+    # Resolved market in allowed category, no trades yet
+    _seed_market(session, "0xnew_resolved",
+        created=datetime(2024, 2, 1, tzinfo=timezone.utc),
+        resolved=datetime(2024, 7, 1, tzinfo=timezone.utc))
+
+    # Unresolved market — must be excluded
+    _seed_market(session, "0xopen",
+        created=datetime(2024, 3, 1, tzinfo=timezone.utc),
+        resolved=None)
+
+    # Out-of-category but resolved — must be excluded from the "new_resolved" path,
+    # since it has no trades either
+    _seed_market(session, "0xsports",
+        created=datetime(2024, 4, 1, tzinfo=timezone.utc),
+        resolved=datetime(2024, 8, 1, tzinfo=timezone.utc))
+    m = session.query(Market).filter_by(id="0xsports").one()
+    m.category = "sports"
+    session.commit()
+
+    ids = _catchup_market_ids(session)
+    assert ids == sorted(["0xhastrades", "0xnew_resolved"])
