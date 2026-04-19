@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from src.collector.trades.polymarket import event_to_trade
 
 YES_ID = "1111"
@@ -38,7 +40,8 @@ def test_maker_usdc_taker_yes_means_taker_sells_yes():
     assert trade["usdc_notional"] == 0.85
     assert trade["side"] == "sell_yes"
     assert trade["is_yes_token"] is True
-    assert trade["tx_hash"] == "0x" + "01" * 0 + ("01" * 32)[:0] or isinstance(trade["tx_hash"], str)
+    assert trade["tx_hash"] == "0xabcd"
+    assert trade["order_hash"] == "0x" + "01" * 32
     assert trade["log_index"] == 0
     assert trade["block_number"] == 50_000_000
     assert trade["maker_address"] == "0xMAKER"
@@ -128,3 +131,27 @@ def test_raw_event_json_is_json_serializable():
     import json
     parsed = json.loads(trade["raw_event_json"])
     assert parsed["makerAmountFilled"] == 500_000
+
+
+def test_event_to_trade_raises_when_no_usdc_leg():
+    ev = _event({
+        "orderHash": b"\x07" * 32,
+        "maker": "0xM", "taker": "0xT",
+        "makerAssetId": int(YES_ID), "takerAssetId": int(NO_ID),  # both non-USDC
+        "makerAmountFilled": 1_000_000, "takerAmountFilled": 1_000_000,
+        "fee": 0,
+    })
+    with pytest.raises(ValueError, match="without USDC leg"):
+        event_to_trade(ev, YES_ID, NO_ID, "0xm1", TS)
+
+
+def test_event_to_trade_raises_when_asset_neither_yes_nor_no():
+    ev = _event({
+        "orderHash": b"\x08" * 32,
+        "maker": "0xM", "taker": "0xT",
+        "makerAssetId": 0, "takerAssetId": 999_999,  # unknown outcome token
+        "makerAmountFilled": 500_000, "takerAmountFilled": 1_000_000,
+        "fee": 0,
+    })
+    with pytest.raises(ValueError, match="matches neither YES nor NO"):
+        event_to_trade(ev, YES_ID, NO_ID, "0xm1", TS)
