@@ -12,6 +12,12 @@ import time
 from datetime import datetime, timezone
 from typing import Iterator
 
+from src.collector.polygon_chain import (
+    ORDER_FILLED_ABI,
+    CTF_EXCHANGE_ADDRESS,
+    estimate_block_for_timestamp,
+)
+
 logger = logging.getLogger(__name__)
 
 DECIMALS_USDC = 10 ** 6
@@ -106,12 +112,6 @@ def event_to_trade(
         "raw_event_json": _serialize_args(args),
     }
 
-
-from src.collector.polygon_chain import (
-    ORDER_FILLED_ABI,
-    CTF_EXCHANGE_ADDRESS,
-    estimate_block_for_timestamp,
-)
 
 BLOCK_CHUNK = 10_000
 CHUNK_SLEEP_SECONDS = 0.1

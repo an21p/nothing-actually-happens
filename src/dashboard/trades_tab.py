@@ -1,6 +1,9 @@
 """Streamlit "Trades" tab — trade-tape exploration views."""
 from datetime import date, datetime, timezone
 
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -103,11 +106,6 @@ def cross_market_daily_volume(session: Session, market_ids: list[str], date_rang
     for ts, notional in rows:
         buckets[ts.date()] = buckets.get(ts.date(), 0.0) + (notional or 0.0)
     return [{"date": d, "notional": v} for d, v in sorted(buckets.items())]
-
-
-import pandas as pd
-import plotly.express as px
-import streamlit as st
 
 
 def render(session: Session, selected_categories: list[str], date_range) -> None:
