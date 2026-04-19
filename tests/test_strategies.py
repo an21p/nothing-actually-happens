@@ -4,7 +4,6 @@ from src.backtester.strategies import (
     at_creation,
     price_threshold,
     time_snapshot,
-    best_price,
 )
 
 def make_history(prices_with_offsets: list[tuple[int, float]], base_time: datetime | None = None):
@@ -58,11 +57,3 @@ def test_snapshot_no_data_within_window():
 
 def test_snapshot_empty_history():
     assert time_snapshot(CREATED_AT, [], offset_hours=24) is None
-
-def test_best_price_finds_minimum():
-    history = make_history([(1, 0.90), (2, 0.75), (3, 0.85)])
-    result = best_price(CREATED_AT, history)
-    assert result == (0.75, CREATED_AT + timedelta(hours=2))
-
-def test_best_price_empty_history():
-    assert best_price(CREATED_AT, []) is None

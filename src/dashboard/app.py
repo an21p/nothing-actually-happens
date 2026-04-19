@@ -16,7 +16,6 @@ STRATEGY_DESCRIPTIONS = {
     "at_creation": 'Buys the "NO" token at the first recorded price after market creation. Baseline strategy to measure early entry timing.',
     "threshold": 'Waits for the "NO" token price to drop to a specific level before buying. Tests entry discipline by requiring a minimum discount.',
     "snapshot": 'Buys the "NO" token at a fixed time offset after market creation (24h, 48h, or 7d). Tests whether fixed timing works as an edge.',
-    "best_price": 'Buys at the lowest "NO" token price observed during the market\'s lifetime. Theoretical upper bound with perfect hindsight.',
 }
 
 SELECTION_MODE_DESCRIPTIONS = {

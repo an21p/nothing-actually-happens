@@ -32,12 +32,6 @@ def time_snapshot(created_at: datetime, price_history: list[dict], offset_hours:
         return None
     return (closest["no_price"], closest["timestamp"])
 
-def best_price(created_at: datetime, price_history: list[dict]) -> tuple[float, datetime] | None:
-    if not price_history:
-        return None
-    best = min(price_history, key=lambda p: p["no_price"])
-    return (best["no_price"], best["timestamp"])
-
 STRATEGIES = {
     "at_creation": {"fn": at_creation, "params": [{}]},
     "threshold": {
@@ -48,5 +42,4 @@ STRATEGIES = {
         "fn": time_snapshot,
         "params": [{"offset_hours": h} for h in [24, 48, 168]],
     },
-    "best_price": {"fn": best_price, "params": [{}]},
 }
