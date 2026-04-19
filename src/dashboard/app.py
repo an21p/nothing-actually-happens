@@ -181,7 +181,7 @@ def render_thesis_overview():
         )
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, 1], tickformat=".0%")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 # ---- View: Strategy Comparison ----
@@ -226,7 +226,7 @@ def render_trade_breakdown(strategy_label: str, results: list) -> None:
 
     st.dataframe(
         trades_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Entry Price": st.column_config.NumberColumn(format="$%.4f"),
@@ -344,7 +344,7 @@ that you hold all the way to resolution (no early exit).
     )
     event = st.dataframe(
         styled,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
@@ -415,7 +415,7 @@ def render_deep_dive():
         hover_data=["strategy"],
     )
     fig_scatter.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_scatter, width="stretch")
 
     # Cumulative P&L curve — strategies ordered by total P&L descending
     strategies_by_pnl = (
@@ -448,7 +448,7 @@ def render_deep_dive():
             trace.line.width = 4
             trace.line.color = "white"
     fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig_pnl, use_container_width=True)
+    st.plotly_chart(fig_pnl, width="stretch")
 
     # Entry price histogram
     st.caption("Shows where most entry prices land. A concentration at higher prices means fewer discount opportunities were available.")
@@ -457,7 +457,7 @@ def render_deep_dive():
         title='Distribution of "NO" Entry Prices',
         labels={"entry_price": '"NO" Token Price at Entry'},
     )
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width="stretch")
 
 
 # ---- View: Market Browser ----
@@ -493,7 +493,7 @@ def render_market_browser():
     df = pd.DataFrame(market_data)
     display_df = df.drop(columns=["id"])
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
     # Market detail expander
     selected_idx = st.selectbox(
@@ -530,7 +530,7 @@ def render_market_browser():
                     color="Source",
                 )
                 fig.update_yaxes(range=[0, 1])
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             # Strategy results for this market
             market_results = (
@@ -605,7 +605,7 @@ def _position_detail(pos: Position, market: Market | None) -> None:
             fig.add_vline(
                 x=pos.entry_timestamp, line_dash="dot", line_color="gray",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
 
 def render_live_positions():
@@ -662,7 +662,7 @@ def render_live_positions():
         df_open = pd.DataFrame(rows)
         st.dataframe(
             df_open.drop(columns=["id"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Entry": st.column_config.NumberColumn(format="$%.4f"),
@@ -698,7 +698,7 @@ def render_live_positions():
         df_closed = pd.DataFrame(rows)
         st.dataframe(
             df_closed,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Entry": st.column_config.NumberColumn(format="$%.4f"),
@@ -721,7 +721,7 @@ def render_live_positions():
         ])
         eq_df["Cumulative"] = eq_df["Realized"].cumsum()
         fig = px.line(eq_df, x="Date", y="Cumulative", title="Cumulative realized P&L")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 # ---- View: Sizing Comparison ----
@@ -885,7 +885,7 @@ multiplied by the shares that rule would have bought at each entry.
             plot_df, x="Date", y="Cumulative", color="Rule",
             title="Cumulative P&L by sizing rule",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     rows = []
     n = len(results)
@@ -902,7 +902,7 @@ multiplied by the shares that rule would have bought at each entry.
     st.dataframe(
         pd.DataFrame(rows),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         column_config={
             "Total P&L": st.column_config.NumberColumn(format="$%+.2f"),
             "Win rate": st.column_config.NumberColumn(format="%.1%%"),
