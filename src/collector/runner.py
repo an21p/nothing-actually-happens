@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import func
@@ -11,6 +12,8 @@ from src.storage.models import Market, PriceSnapshot
 from src.collector.polymarket_api import fetch_resolved_markets
 from src.collector.price_history import fetch_price_history
 from src.collector.polygon_chain import fetch_onchain_prices
+
+MIN_CREATED_AT = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 
 def upsert_market(session: Session, market_data: dict) -> bool:
@@ -63,6 +66,10 @@ def collect(
     markets = fetch_resolved_markets(
         categories=categories, limit=limit, end_date_max=end_date_max
     )
+    pre_filter = len(markets)
+    markets = [m for m in markets if m["created_at"] >= MIN_CREATED_AT]
+    if pre_filter != len(markets):
+        print(f"Dropped {pre_filter - len(markets)} markets with created_at < {MIN_CREATED_AT.date()}")
     print(f"Found {len(markets)} markets from API")
 
     new_count = 0
