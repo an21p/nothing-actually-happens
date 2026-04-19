@@ -110,3 +110,71 @@ def run_backfill(
 
         results[market_id] = written
     return results
+
+
+def _catchup_market_ids(session: Session) -> list[str]:
+    """Union of (markets with existing trades) and (resolved filtered markets w/ no trades yet)."""
+    with_trades = {
+        r[0] for r in session.query(Trade.market_id)
+        .filter(Trade.venue == "polymarket")
+        .distinct().all()
+    }
+    new_resolved = {
+        r[0] for r in session.query(Market.id)
+        .filter(Market.resolution.isnot(None))
+        .filter(Market.resolved_at.isnot(None))
+        .filter(Market.category.in_(ALLOWED_CATEGORIES))
+        .all()
+        if r[0] not in with_trades
+    }
+    return sorted(with_trades | new_resolved)
+
+
+def run_catchup(
+    session: Session,
+    fetch_trades_fn: Callable[..., Iterator[dict]],
+    yes_token_fn: Callable[[str], str | None],
+) -> dict[str, int]:
+    """Incremental pull for markets in trades + any resolved markets not yet present."""
+    results: dict[str, int] = {}
+    for market_id in _catchup_market_ids(session):
+        market = session.get(Market, market_id)
+        if market is None:
+            continue
+
+        yes_id = yes_token_fn(market_id)
+        if yes_id is None:
+            logger.warning("skip %s: yes_token_id unavailable", market_id)
+            continue
+
+        last_block = _max_block_for_market(session, market_id)
+        from_block = (last_block + 1) if last_block is not None else None
+
+        seen = _existing_keys(session, market_id)
+        written = 0
+        started = time.monotonic()
+
+        try:
+            for trade in fetch_trades_fn(
+                market,
+                yes_token_id=yes_id,
+                no_token_id=market.no_token_id,
+                from_block=from_block,
+            ):
+                if _write_trade(session, trade, seen):
+                    written += 1
+                    if written % WRITE_BATCH == 0:
+                        session.flush()
+                    if written % COMMIT_BATCH == 0:
+                        session.commit()
+            session.commit()
+            logger.info(
+                "catchup %s: %d new trades in %.1fs",
+                market_id, written, time.monotonic() - started,
+            )
+        except Exception as exc:
+            session.rollback()
+            logger.warning("catchup %s aborted after %d trades: %s", market_id, written, exc)
+
+        results[market_id] = written
+    return results

@@ -152,3 +152,69 @@ def test_select_pilot_markets_respects_category_filter(session):
     session.commit()
 
     assert select_pilot_markets(session, n=5) == []
+
+
+def test_run_catchup_resumes_from_last_block(session):
+    from src.collector.trades.runner import run_catchup, run_backfill
+
+    _seed_market(
+        session, "0xm1",
+        created=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        resolved=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+
+    def first_run_fetch(market, **kwargs):
+        yield _fake_trade("0xm1", block=50_000_000, tx_suffix="a1")
+        yield _fake_trade("0xm1", block=50_000_005, tx_suffix="a2")
+
+    run_backfill(session, ["0xm1"], first_run_fetch, lambda _: "1111")
+    session.commit()
+    assert session.query(Trade).count() == 2
+
+    observed_from = {}
+
+    def catchup_fetch(market, yes_token_id, no_token_id, from_block=None, to_block=None, w3=None):
+        observed_from[market.id] = from_block
+        yield _fake_trade("0xm1", block=50_000_006, tx_suffix="a3")
+
+    run_catchup(session, fetch_trades_fn=catchup_fetch, yes_token_fn=lambda _: "1111")
+    session.commit()
+
+    assert observed_from["0xm1"] == 50_000_006
+    assert session.query(Trade).count() == 3
+
+
+def test_run_catchup_backfills_market_with_no_trades_yet(session):
+    from src.collector.trades.runner import run_catchup
+
+    _seed_market(session, "0xnew",
+        created=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        resolved=datetime(2024, 12, 1, tzinfo=timezone.utc))
+
+    observed_from = {}
+
+    def catchup_fetch(market, yes_token_id, no_token_id, from_block=None, to_block=None, w3=None):
+        observed_from[market.id] = from_block
+        yield _fake_trade("0xnew", block=55_000_000, tx_suffix="b1")
+
+    run_catchup(session, fetch_trades_fn=catchup_fetch, yes_token_fn=lambda _: "1111")
+    session.commit()
+    # No prior rows -> from_block must be None (let fetch compute from created_at).
+    assert observed_from["0xnew"] is None
+    assert session.query(Trade).count() == 1
+
+
+def test_run_catchup_skips_unresolved_markets_not_in_trades(session):
+    from src.collector.trades.runner import run_catchup
+
+    _seed_market(session, "0xopen",
+        created=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        resolved=None)
+
+    called = []
+    def fetch(market, **kwargs):
+        called.append(market.id)
+        return iter(())
+
+    run_catchup(session, fetch_trades_fn=fetch, yes_token_fn=lambda _: "1111")
+    assert called == []
