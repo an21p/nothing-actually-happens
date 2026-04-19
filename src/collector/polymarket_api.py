@@ -71,7 +71,7 @@ def _parse_market_common(raw: dict) -> dict | None:
         "no_token_id": no_token_id,
         "created_at": created_at,
         "end_date": end_date,
-        "source_url": f"https://polymarket.com/event/{slug}" if slug else None,
+        "source_url": f"https://polymarket.com/market/{slug}" if slug else None,
         # raw outcomes/prices retained so resolution-aware callers can use them
         "_outcomes": outcomes,
         "_prices": prices,

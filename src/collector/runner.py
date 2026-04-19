@@ -18,6 +18,7 @@ def upsert_market(session: Session, market_data: dict) -> bool:
     if existing:
         existing.resolution = market_data["resolution"]
         existing.resolved_at = market_data["resolved_at"]
+        existing.source_url = market_data["source_url"]
         return False
     market = Market(**market_data)
     session.add(market)

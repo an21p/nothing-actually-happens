@@ -66,7 +66,7 @@ def test_parse_market_no_resolution():
     assert result["resolution"] == "No"
     assert result["no_token_id"] == "52791640887"
     assert result["category"] == "geopolitical"
-    assert result["source_url"] == "https://polymarket.com/event/will-russia-invade-finland-2025"
+    assert result["source_url"] == "https://polymarket.com/market/will-russia-invade-finland-2025"
     assert isinstance(result["created_at"], datetime)
 
 def test_parse_market_yes_resolution():
@@ -128,7 +128,7 @@ def test_parse_open_market_accepts_unresolved():
     assert result["no_token_id"] == "bbb"
     assert result["category"] == "geopolitical"
     assert result["end_date"] == datetime(2026, 4, 30, tzinfo=timezone.utc)
-    assert result["source_url"] == "https://polymarket.com/event/will-live-event-happen"
+    assert result["source_url"] == "https://polymarket.com/market/will-live-event-happen"
 
 
 def test_parse_open_market_rejects_neg_risk():

@@ -1,0 +1,2 @@
+- [ ] test live paper trading
+- [ ] add live trading with py-clob 
