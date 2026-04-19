@@ -1,2 +1,3 @@
 - [ ] test live paper trading
-- [ ] add live trading with py-clob 
+- [ ] add live trading with py-clob
+- [ ] live guardrail: before placing any order, call `fetch_price_history` for the `no_token_id` and abort if the response is empty — oracle-settled markets with no CLOB history (low-liquidity micro-markets) must never be traded live, same as they're excluded from the backtester.

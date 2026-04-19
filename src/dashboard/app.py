@@ -8,6 +8,7 @@ from sqlalchemy import func
 from src.storage.db import get_engine, get_session
 from src.storage.models import Market, PriceSnapshot, BacktestResult, Position
 from src.backtester.engine import run_all_strategies, run_backtest
+from src.collector.runner import collect_new
 from src.live.sizing import fixed_notional, fixed_shares
 
 st.set_page_config(page_title="Polymarket Backtester", layout="wide")
@@ -464,6 +465,23 @@ def render_deep_dive():
 def render_market_browser():
     st.header("Market Browser")
 
+    fetch_col, _ = st.columns([1, 4])
+    if fetch_col.button(
+        "Fetch latest markets",
+        help=(
+            "Pages through resolved markets in the selected categories from "
+            "newest to oldest, stopping as soon as a full page contains nothing "
+            "new. Everything missed since the last fetch is added."
+        ),
+    ):
+        with st.spinner("Fetching new resolved markets..."):
+            added = collect_new(session, categories=selected_categories or None)
+        if added:
+            st.success(f"Added {added} new market(s).")
+        else:
+            st.info("Already up to date — no new resolved markets in the selected categories.")
+        st.rerun()
+
     search = st.text_input("Search markets", "")
 
     query = session.query(Market).filter(
@@ -492,15 +510,16 @@ def render_market_browser():
     df = pd.DataFrame(market_data)
     display_df = df.drop(columns=["id"])
 
-    st.dataframe(display_df, width="stretch", hide_index=True)
-
-    # Market detail expander
-    selected_idx = st.selectbox(
-        "Select market for detail view",
-        range(len(markets)),
-        format_func=lambda i: markets[i].question[:80],
+    event = st.dataframe(
+        display_df,
+        width="stretch",
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
     )
-    selected_market = markets[selected_idx] if markets else None
+
+    selected_rows = event.selection.rows if event and event.selection else []
+    selected_market = markets[selected_rows[0]] if selected_rows else None
 
     if selected_market:
         with st.expander(f"Detail: {selected_market.question[:60]}...", expanded=True):

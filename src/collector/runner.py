@@ -13,7 +13,7 @@ from src.collector.polymarket_api import fetch_resolved_markets
 from src.collector.price_history import fetch_price_history
 from src.collector.polygon_chain import fetch_onchain_prices
 
-MIN_CREATED_AT = datetime(2020, 1, 1, tzinfo=timezone.utc)
+MIN_CREATED_AT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
 def upsert_market(session: Session, market_data: dict) -> bool:
@@ -116,6 +116,61 @@ def collect(
     engine.dispose()
 
     print(f"Done. {new_count} new, {skipped_count} skipped (already collected).")
+
+
+def collect_new(
+    session: Session,
+    categories: list[str] | None = None,
+    enrich_onchain: bool = False,
+) -> int:
+    """Forward-pass: fetch newest resolved markets, add any missing from the DB.
+
+    Unlike `collect()` (which walks backwards into history), this targets recently
+    resolved markets for incremental catch-up. Pagination walks newest-first and
+    stops as soon as a full page yields no unknown markets — so every market
+    resolved since the last fetch is picked up, however many pages that takes.
+    Caller owns the session lifecycle. Returns the number of newly inserted
+    markets.
+    """
+    existing_ids = set(row[0] for row in session.query(Market.id).all())
+
+    markets = fetch_resolved_markets(
+        categories=categories, stop_if_all_known=existing_ids
+    )
+    markets = [m for m in markets if m["created_at"] >= MIN_CREATED_AT]
+
+    new_count = 0
+    for market_data in markets:
+        is_new = upsert_market(session, market_data)
+        if not is_new:
+            continue
+        session.flush()
+        new_count += 1
+
+        snapshots: list[dict] = []
+        for attempt in range(3):
+            try:
+                snapshots = fetch_price_history(
+                    token_id=market_data["no_token_id"],
+                    market_id=market_data["id"],
+                )
+                break
+            except (httpx.ReadTimeout, httpx.ConnectTimeout):
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+
+        if enrich_onchain:
+            snapshots.extend(fetch_onchain_prices(
+                no_token_id=market_data["no_token_id"],
+                market_id=market_data["id"],
+                created_at=market_data["created_at"],
+                resolved_at=market_data["resolved_at"],
+            ))
+
+        store_price_snapshots(session, snapshots, market_data["id"])
+
+    session.commit()
+    return new_count
 
 
 def main():

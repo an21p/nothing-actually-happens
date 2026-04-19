@@ -10,10 +10,13 @@ GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 MARKETS_PER_PAGE = 1000
 
 
+RESOLUTION_PRICE_THRESHOLD = 0.999
+
+
 def determine_resolution(outcomes: list[str], prices: list[str]) -> str | None:
     float_prices = [float(p) for p in prices]
     for i, price in enumerate(float_prices):
-        if price > 0.9:
+        if price >= RESOLUTION_PRICE_THRESHOLD:
             return outcomes[i]
     return None
 
@@ -114,15 +117,26 @@ def fetch_resolved_markets(
     categories: list[str] | None = None,
     limit: int | None = None,
     end_date_max: str | None = None,
+    stop_if_all_known: set[str] | None = None,
 ) -> list[dict]:
     """Fetch resolved markets from the Gamma API with pagination.
 
     If end_date_max is provided, only fetches markets with endDate <= that value.
     Use this to continue collecting older markets from where the last run left off.
+
+    If stop_if_all_known is provided, pagination stops as soon as a page yields
+    zero on-category markets whose id is not already in that set — the forward
+    catch-up case where we only want markets newer than what we already have.
     """
     client = httpx.Client(timeout=30)
     all_markets = []
     offset = 0
+
+    print(
+        f"  Starting Gamma pagination "
+        f"(categories={categories or 'all'}, limit={limit}, end_date_max={end_date_max})",
+        flush=True,
+    )
 
     while True:
         params = {
@@ -136,9 +150,33 @@ def fetch_resolved_markets(
         if end_date_max:
             params["end_date_max"] = end_date_max
 
-        response = client.get(f"{GAMMA_API_BASE}/markets", params=params)
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.get(f"{GAMMA_API_BASE}/markets", params=params)
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                continue
+            if response.status_code >= 500:
+                last_error = httpx.HTTPStatusError(
+                    f"server {response.status_code}", request=response.request, response=response
+                )
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                continue
+            break
+
+        if response is None or response.status_code >= 500:
+            print(
+                f"  API {response.status_code if response else 'network'} at offset={offset} after 3 retries, stopping pagination",
+                flush=True,
+            )
+            break
         if response.status_code == 422:
-            print(f"  API rejected offset={offset}, stopping pagination")
+            print(f"  API rejected offset={offset}, stopping pagination", flush=True)
             break
         response.raise_for_status()
         raw_markets = response.json()
@@ -151,6 +189,7 @@ def fetch_resolved_markets(
 
         page_num = offset // MARKETS_PER_PAGE + 1
         accepted = 0
+        page_new = 0
         for raw in raw_markets:
             parsed = parse_market(raw)
             if parsed is None:
@@ -159,12 +198,22 @@ def fetch_resolved_markets(
                 continue
             accepted += 1
             all_markets.append(parsed)
+            if stop_if_all_known is not None and parsed["id"] not in stop_if_all_known:
+                page_new += 1
 
             if limit and len(all_markets) >= limit:
                 client.close()
                 return all_markets[:limit]
 
-        print(f"  Page {page_num}: {len(raw_markets)} raw, {accepted} accepted, {len(all_markets)} total")
+        print(
+            f"  Page {page_num}: {len(raw_markets)} raw, {accepted} accepted, {len(all_markets)} total",
+            flush=True,
+        )
+
+        if stop_if_all_known is not None and accepted > 0 and page_new == 0:
+            print(f"  Page {page_num} had no new markets — caught up.", flush=True)
+            break
+
         offset += MARKETS_PER_PAGE
         time.sleep(0.05)
 

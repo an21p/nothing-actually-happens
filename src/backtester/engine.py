@@ -1,7 +1,7 @@
 import argparse
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from src.storage.db import get_engine, get_session
@@ -60,7 +60,8 @@ def run_backtest(
     strategy_label = f"{strategy_name}{param_suffix}{selection_suffix}"
     run_id = str(uuid.uuid4())[:8]
 
-    query = select(Market).where(Market.resolution.isnot(None))
+    has_snapshots = exists().where(PriceSnapshot.market_id == Market.id)
+    query = select(Market).where(Market.resolution.isnot(None), has_snapshots)
     if categories:
         query = query.where(Market.category.in_(categories))
     markets = session.execute(query).scalars().all()

@@ -59,6 +59,11 @@ def test_determine_resolution_unresolved():
 def test_determine_resolution_near_one():
     assert determine_resolution(["Yes", "No"], ["0.001", "0.999"]) == "No"
 
+def test_determine_resolution_rejects_sub_threshold():
+    """Only truly oracle-settled markets (price >= 0.999) count — not just high-prob live ones."""
+    assert determine_resolution(["Yes", "No"], ["0.05", "0.95"]) is None
+    assert determine_resolution(["Yes", "No"], ["0.01", "0.99"]) is None
+
 def test_parse_market_no_resolution():
     result = parse_market(SAMPLE_GAMMA_MARKET)
     assert result["id"] == "0xa6d544beef271a4e941e55897ee14396c2c3b656a44aba63c8de5854e919eaa6"
@@ -175,6 +180,7 @@ def _make_api_market(condition_id: str, question: str = "Test?") -> dict:
 def test_fetch_passes_end_date_max_to_api(mock_client_cls, mock_sleep):
     """end_date_max is forwarded as a query parameter to the API."""
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.json.side_effect = [[_make_api_market("id_a")], []]
     mock_response.raise_for_status = MagicMock()
 
@@ -194,6 +200,7 @@ def test_fetch_passes_end_date_max_to_api(mock_client_cls, mock_sleep):
 def test_fetch_no_end_date_max_by_default(mock_client_cls, mock_sleep):
     """Without end_date_max, the parameter is not sent to the API."""
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.json.side_effect = [[_make_api_market("id_a")], []]
     mock_response.raise_for_status = MagicMock()
 

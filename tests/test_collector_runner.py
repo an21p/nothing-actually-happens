@@ -18,11 +18,11 @@ def _make_market(market_id: str, created_at: datetime) -> dict:
     }
 
 
-def test_collect_drops_markets_created_before_2020():
-    """Markets with created_at < 2020-01-01 UTC must never reach upsert_market."""
+def test_collect_drops_markets_created_before_floor():
+    """Markets with created_at < MIN_CREATED_AT must never reach upsert_market."""
     fake_markets = [
-        _make_market("old", datetime(2019, 6, 1, tzinfo=timezone.utc)),
-        _make_market("new", datetime(2021, 6, 1, tzinfo=timezone.utc)),
+        _make_market("old", datetime(2023, 6, 1, tzinfo=timezone.utc)),
+        _make_market("new", datetime(2025, 6, 1, tzinfo=timezone.utc)),
     ]
 
     captured_ids: list[str] = []
@@ -36,12 +36,13 @@ def test_collect_drops_markets_created_before_2020():
          patch("src.collector.runner.upsert_market", side_effect=_fake_upsert):
         collect(categories=["political"], db_path=":memory:")
 
-    assert captured_ids == ["new"], f"pre-2020 market leaked: {captured_ids}"
+    assert captured_ids == ["new"], f"pre-floor market leaked: {captured_ids}"
 
 
-def test_collect_keeps_markets_created_on_or_after_2020_boundary():
-    """Exactly 2020-01-01 00:00:00 UTC must pass the floor (>=, not >)."""
-    boundary = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+def test_collect_keeps_markets_on_floor_boundary():
+    """Exactly MIN_CREATED_AT must pass the floor (>=, not >)."""
+    from src.collector.runner import MIN_CREATED_AT
+    boundary = MIN_CREATED_AT
     fake_markets = [_make_market("boundary", boundary)]
 
     captured_ids: list[str] = []
