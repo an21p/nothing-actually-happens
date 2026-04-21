@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -692,7 +692,9 @@ def _render_positions_panel(
         for p in open_pos:
             m = markets_by_id.get(p.market_id)
             entry_ts = p.entry_timestamp
-            age = (now - entry_ts.replace(tzinfo=None)).total_seconds() if entry_ts else 0.0
+            if entry_ts is not None and entry_ts.tzinfo is None:
+                entry_ts = entry_ts.replace(tzinfo=timezone.utc)
+            age = (now - entry_ts).total_seconds() if entry_ts else 0.0
             rows.append({
                 "Question": m.question if m else p.market_id,
                 "Strategy": p.strategy,
@@ -777,7 +779,7 @@ def render_live_positions():
         m.id: m
         for m in session.query(Market).filter(Market.id.in_(market_ids)).all()
     }
-    now = datetime.utcnow()
+    now = datetime.now(tz=timezone.utc)
 
     # Config is optional — the All tab works without it.
     try:

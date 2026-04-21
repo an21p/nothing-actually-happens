@@ -60,6 +60,29 @@ collector ──► SQLite ──► backtester ──► SQLite ──► dashb
 - **Timestamps are timezone-aware UTC everywhere.** SQLAlchemy columns use `DateTime(timezone=True)`; don't introduce naive datetimes.
 - **No migrations framework.** Schema changes via `Base.metadata.create_all` only add tables on fresh DBs. For existing DBs, delete `data/polymarket.db` or migrate manually.
 
+## Live paper-trading bot
+
+The live runner reads the `favorite_strategies` DB table (populated via the dashboard's Strategy Comparison star-toggle) plus `live_config.yaml` (per-strategy bankroll + shares-per-trade) and opens paper positions against open geopolitical markets.
+
+```bash
+# First-time setup — copy the example and edit bankrolls / shares-per-trade.
+# live_config.yaml is gitignored so your local tuning stays local.
+cp live_config.example.yaml live_config.yaml
+
+# One pass (safe to run ad-hoc; dry-run skips DB writes)
+uv run python -m src.live.runner
+uv run python -m src.live.runner --dry-run
+```
+
+Run it on a 6-hour cron. The snapshot strategies have a ±12h tolerance window, so 6h cadence leaves comfortable headroom:
+
+```cron
+# crontab -e — logs to /tmp/polymarket-live.log
+0 */6 * * * cd /absolute/path/to/polymarket && /usr/local/bin/uv run python -m src.live.runner >> /tmp/polymarket-live.log 2>&1
+```
+
+Adjust the `cd` path and `uv` absolute path (`which uv`) for your machine. The runner is idempotent and safe to re-invoke; it upserts open markets, bankroll-gates new entries per strategy, marks open positions to market, and closes positions on resolution.
+
 ## Configuration
 
 Optional `.env` (see `.env.example`):
