@@ -50,7 +50,7 @@ collector ──► SQLite ──► backtester ──► SQLite ──► dashb
 | `src/collector/` | Paginates Gamma API for `closed=true&resolved=true`, filters to true binary Yes/No markets, pulls hourly No-token price history. Optional Polygon RPC enrichment. |
 | `src/backtester/` | Pure-function strategies `(created_at, price_history, **params) → (entry_price, entry_ts)`. Engine iterates markets, computes PnL, tags every row with a fresh 8-char `run_id`. |
 | `src/dashboard/` | Streamlit app for category/date-filtered metrics. Can trigger backtests from the UI. |
-| `src/live/` | Cron-friendly one-pass paper-trading runner: fetch open markets → detect entries → mark-to-market → close on resolution. |
+| `src/live/` | Cron-friendly one-pass paper-trading runner: fetch open markets → detect entries (per favorited strategy) → bankroll-gate → mark-to-market → close on resolution. Driven by the `favorite_strategies` DB table + `live_config.yaml`; each favorite runs its own compounding bankroll. |
 
 ## Design notes
 
