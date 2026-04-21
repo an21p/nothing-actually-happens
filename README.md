@@ -74,11 +74,11 @@ uv run python -m src.live.runner
 uv run python -m src.live.runner --dry-run
 ```
 
-Run it on a 6-hour cron. The snapshot strategies have a ±12h tolerance window, so 6h cadence leaves comfortable headroom:
+Run it on a 2-hour cron. The snapshot strategies have a ±12h tolerance window, so 2h cadence leaves comfortable headroom:
 
 ```cron
 # crontab -e — logs to /tmp/polymarket-live.log
-0 */6 * * * cd /absolute/path/to/polymarket && /usr/local/bin/uv run python -m src.live.runner >> /tmp/polymarket-live.log 2>&1
+0 */2 * * * cd /absolute/path/to/polymarket && /usr/local/bin/uv run python -m src.live.runner >> /tmp/polymarket-live.log 2>&1
 ```
 
 Adjust the `cd` path and `uv` absolute path (`which uv`) for your machine. The runner is idempotent and safe to re-invoke; it upserts open markets, bankroll-gates new entries per strategy, marks open positions to market, and closes positions on resolution.
