@@ -1,26 +1,25 @@
-"""Entry-signal detection for the live paper-trading bot.
+"""Entry-signal detection + candidate enumeration for the live bot.
 
-Applies `snapshot_24__earliest_deadline`:
-- Market is aged 24h ± tolerance_hours (default 12h)
-- Market category is in scope
-- Market has no prior Position (no re-entry)
-- No open Position on a template-duplicate of this market
-- Among template-duplicates inside a tick, earliest end_date wins
+Two strategy-specific detectors share the same EntrySignal output:
+- `detect_snapshot_entries` — age-window strategy (snapshot_N)
+- `detect_threshold_entries` — observation-price strategy (threshold_p)
 
-Returns a quote-backed `EntrySignal` per selected market.
+`enumerate_candidates` is for the dashboard; it classifies every open
+market × favorite pair into a state without opening any positions.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.storage.models import Market, Position
 from src.backtester.selection import _select_markets, _template_key
+from src.live.favorites import Favorite
+from src.storage.models import Market, Position
 
 
 @dataclass(frozen=True)
@@ -28,67 +27,104 @@ class EntrySignal:
     market: Market
     entry_price: float
     entry_timestamp: datetime
+    favorite: Favorite
 
 
-def detect_entries(
-    session: Session,
-    *,
-    now: datetime,
-    categories: list[str] | None,
-    max_age_hours: int = 24,
-    tolerance_hours: int = 12,
-    quote_fn: Callable[[str], float | None] | None = None,
-) -> list[EntrySignal]:
-    if quote_fn is None:
-        from src.live.quotes import fetch_midpoint
-        quote_fn = fetch_midpoint
+def _ensure_utc(ts: datetime) -> datetime:
+    # SQLite round-trips strip tzinfo; assume UTC on naive.
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
 
-    low = max_age_hours - tolerance_hours
-    high = max_age_hours + tolerance_hours
-    oldest_eligible = now - timedelta(hours=high)
-    youngest_eligible = now - timedelta(hours=low)
 
-    query = select(Market).where(Market.resolution.is_(None))
-    if categories:
-        query = query.where(Market.category.in_(categories))
-    markets = list(session.execute(query).scalars().all())
+def _load_open_geopolitical_markets(session: Session) -> list[Market]:
+    query = select(Market).where(
+        Market.resolution.is_(None),
+        Market.category == "geopolitical",
+    )
+    return list(session.execute(query).scalars().all())
 
-    def _age_ok(m: Market) -> bool:
-        created = m.created_at
-        if created.tzinfo is None:
-            # SQLite round-trip strips tzinfo — treat as UTC.
-            from datetime import timezone as _tz
-            created = created.replace(tzinfo=_tz.utc)
-        return oldest_eligible <= created <= youngest_eligible
 
-    candidates = [m for m in markets if _age_ok(m)]
-
-    traded_market_ids = {
-        row[0] for row in session.query(Position.market_id).distinct().all()
-    }
-    candidates = [m for m in candidates if m.id not in traded_market_ids]
-
-    open_pos_markets = (
+def _blocked_by_prior_position(
+    session: Session, strategy_label: str
+) -> set[str]:
+    """Markets on which THIS strategy already entered (ever, any status)."""
+    rows = (
         session.query(Position.market_id)
-        .filter(Position.status == "open")
+        .filter(Position.strategy == strategy_label)
         .distinct()
         .all()
     )
-    blocked_templates = set()
-    for (mid,) in open_pos_markets:
-        mm = session.get(Market, mid)
-        if mm is not None:
-            blocked_templates.add(_template_key(mm.question))
-    candidates = [
-        m for m in candidates if _template_key(m.question) not in blocked_templates
-    ]
+    return {mid for (mid,) in rows}
 
-    selected = _select_markets(candidates, "earliest_deadline")
+
+def _blocked_template_keys(
+    session: Session, strategy_label: str
+) -> set[str]:
+    """Template keys currently held open by THIS strategy."""
+    open_rows = (
+        session.query(Position.market_id)
+        .filter(
+            Position.strategy == strategy_label,
+            Position.status == "open",
+        )
+        .distinct()
+        .all()
+    )
+    keys: set[str] = set()
+    for (mid,) in open_rows:
+        m = session.get(Market, mid)
+        if m is not None:
+            keys.add(_template_key(m.question))
+    return keys
+
+
+def detect_snapshot_entries(
+    session: Session,
+    fav: Favorite,
+    *,
+    now: datetime,
+    tolerance_hours: int,
+    quote_fn: Callable[[str], float | None],
+) -> list[EntrySignal]:
+    offset = fav.params["offset_hours"]
+    low = offset - tolerance_hours
+    high = offset + tolerance_hours
+    oldest = now - timedelta(hours=high)
+    youngest = now - timedelta(hours=low)
+
+    markets = _load_open_geopolitical_markets(session)
+
+    def _age_ok(m: Market) -> bool:
+        created = _ensure_utc(m.created_at)
+        return oldest <= created <= youngest
+
+    candidates = [m for m in markets if _age_ok(m)]
+    taken = _blocked_by_prior_position(session, fav.label)
+    candidates = [m for m in candidates if m.id not in taken]
+    blocked_keys = _blocked_template_keys(session, fav.label)
+    candidates = [m for m in candidates if _template_key(m.question) not in blocked_keys]
+
+    # Within a single detection tick, pick at most one market per template group.
+    # `_select_markets` handles rolling-series dedup for the backtester (multiple
+    # cohorts with non-overlapping deadlines can all emit), but for live entry we
+    # want exactly one entry per template — the one ranked first by selection_mode.
+    if fav.selection_mode == "earliest_created":
+        by_template: dict[str, Market] = {}
+        for m in sorted(candidates, key=lambda m: (_ensure_utc(m.created_at),)):
+            key = _template_key(m.question)
+            if key not in by_template:
+                by_template[key] = m
+        selected = list(by_template.values())
+    else:
+        selected = _select_markets(candidates, fav.selection_mode)
 
     signals: list[EntrySignal] = []
     for m in selected:
         price = quote_fn(m.no_token_id)
         if price is None:
             continue
-        signals.append(EntrySignal(market=m, entry_price=price, entry_timestamp=now))
+        signals.append(
+            EntrySignal(market=m, entry_price=price, entry_timestamp=now, favorite=fav)
+        )
     return signals
