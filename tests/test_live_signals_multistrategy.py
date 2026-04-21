@@ -132,3 +132,92 @@ def test_snapshot_skips_when_quote_unavailable(session):
     session.commit()
     signals = detect_snapshot_entries(session, SNAP, now=NOW, tolerance_hours=12, quote_fn=lambda _t: None)
     assert signals == []
+
+
+from src.live.signals import detect_threshold_entries
+
+
+THR = Favorite(
+    label="threshold_0.3__earliest_created",
+    strategy_name="threshold",
+    params={"threshold": 0.3},
+    selection_mode="earliest_created",
+    starting_bankroll=1000.0,
+    shares_per_trade=10.0,
+)
+
+
+def test_threshold_fires_when_quote_at_or_below_threshold(session):
+    _add_market(session, "dip", created_at=NOW - timedelta(days=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.28))
+    assert len(signals) == 1
+    assert signals[0].entry_price == 0.28
+
+
+def test_threshold_fires_on_exactly_threshold(session):
+    _add_market(session, "edge", created_at=NOW - timedelta(days=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.3))
+    assert [s.market.id for s in signals] == ["edge"]
+
+
+def test_threshold_fires_on_market_that_opened_below(session):
+    # Market opened 2h ago already below threshold — still a valid entry
+    # (live policy: fire on observation, not on crossing).
+    _add_market(session, "fresh", created_at=NOW - timedelta(hours=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.15))
+    assert [s.market.id for s in signals] == ["fresh"]
+
+
+def test_threshold_skips_when_quote_above_threshold(session):
+    _add_market(session, "up", created_at=NOW - timedelta(days=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.45))
+    assert signals == []
+
+
+def test_threshold_skips_non_geopolitical(session):
+    _add_market(session, "pol", category="political", created_at=NOW - timedelta(days=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.2))
+    assert signals == []
+
+
+def test_threshold_per_strategy_dedup_allows_snapshot_on_same_market(session):
+    m = _add_market(session, "shared", created_at=NOW - timedelta(days=2))
+    session.flush()
+    _add_position(session, m.id, "snapshot_24__earliest_created")
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.2))
+    assert [s.market.id for s in signals] == ["shared"]
+
+
+def test_threshold_blocks_when_same_strategy_already_entered(session):
+    m = _add_market(session, "dup", created_at=NOW - timedelta(days=2))
+    session.flush()
+    _add_position(session, m.id, THR.label)
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.2))
+    assert signals == []
+
+
+def test_threshold_template_dedup_prefers_earliest_created(session):
+    base = NOW - timedelta(days=2)
+    _add_market(session, "earlier",
+                question="Will Israel strike Gaza by January 2, 2026?",
+                created_at=base - timedelta(minutes=1))
+    _add_market(session, "later",
+                question="Will Israel strike Gaza by January 31, 2026?",
+                created_at=base)
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=_quote(0.2))
+    assert [s.market.id for s in signals] == ["earlier"]
+
+
+def test_threshold_skips_when_quote_none(session):
+    _add_market(session, "noq", created_at=NOW - timedelta(days=2))
+    session.commit()
+    signals = detect_threshold_entries(session, THR, now=NOW, quote_fn=lambda _t: None)
+    assert signals == []

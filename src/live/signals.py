@@ -128,3 +128,51 @@ def detect_snapshot_entries(
             EntrySignal(market=m, entry_price=price, entry_timestamp=now, favorite=fav)
         )
     return signals
+
+
+def detect_threshold_entries(
+    session: Session,
+    fav: Favorite,
+    *,
+    now: datetime,
+    quote_fn: Callable[[str], float | None],
+) -> list[EntrySignal]:
+    threshold = fav.params["threshold"]
+    markets = _load_open_geopolitical_markets(session)
+
+    taken = _blocked_by_prior_position(session, fav.label)
+    markets = [m for m in markets if m.id not in taken]
+    blocked_keys = _blocked_template_keys(session, fav.label)
+    markets = [m for m in markets if _template_key(m.question) not in blocked_keys]
+
+    # Quote each; keep those at-or-below threshold.
+    priced: list[tuple[Market, float]] = []
+    for m in markets:
+        price = quote_fn(m.no_token_id)
+        if price is None or price > threshold:
+            continue
+        priced.append((m, price))
+
+    # Template dedup: per Task 7, _select_markets' rolling-series behavior
+    # is wrong for live ticks — pick one per template.
+    if fav.selection_mode == "earliest_created":
+        by_template: dict[str, Market] = {}
+        for m, _ in sorted(priced, key=lambda pair: _ensure_utc(pair[0].created_at)):
+            key = _template_key(m.question)
+            if key not in by_template:
+                by_template[key] = m
+        selected = list(by_template.values())
+    else:
+        selected = _select_markets([m for m, _ in priced], fav.selection_mode)
+
+    price_by_id = {m.id: p for m, p in priced}
+
+    return [
+        EntrySignal(
+            market=m,
+            entry_price=price_by_id[m.id],
+            entry_timestamp=now,
+            favorite=fav,
+        )
+        for m in selected
+    ]
