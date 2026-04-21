@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.backtester.strategies import (
     at_creation,
+    limit,
     price_threshold,
     time_snapshot,
 )
@@ -57,3 +58,21 @@ def test_snapshot_no_data_within_window():
 
 def test_snapshot_empty_history():
     assert time_snapshot(CREATED_AT, [], offset_hours=24) is None
+
+def test_limit_fills_on_crossing():
+    """Price must have been above threshold first; fill price is exactly threshold."""
+    history = make_history([(1, 0.50), (2, 0.45), (3, 0.30), (4, 0.25)])
+    result = limit(CREATED_AT, history, threshold=0.30)
+    assert result == (0.30, CREATED_AT + timedelta(hours=3))
+
+def test_limit_skips_market_opening_below_threshold():
+    """Markets that open at-or-below threshold never trigger — no pre-existing limit order."""
+    history = make_history([(1, 0.20), (2, 0.15), (3, 0.40)])
+    assert limit(CREATED_AT, history, threshold=0.30) is None
+
+def test_limit_never_crosses():
+    history = make_history([(1, 0.80), (2, 0.70), (3, 0.60)])
+    assert limit(CREATED_AT, history, threshold=0.50) is None
+
+def test_limit_empty_history():
+    assert limit(CREATED_AT, [], threshold=0.30) is None

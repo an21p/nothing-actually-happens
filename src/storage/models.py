@@ -66,6 +66,13 @@ class BacktestResult(Base):
     market: Mapped["Market"] = relationship(back_populates="backtest_results")
 
 
+class FavoriteStrategy(Base):
+    __tablename__ = "favorite_strategies"
+
+    strategy: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Position(Base):
     __tablename__ = "positions"
 

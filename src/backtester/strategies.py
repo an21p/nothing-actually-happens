@@ -14,6 +14,24 @@ def price_threshold(created_at: datetime, price_history: list[dict], threshold: 
             return (point["no_price"], point["timestamp"])
     return None
 
+def limit(created_at: datetime, price_history: list[dict], threshold: float) -> tuple[float, datetime] | None:
+    """Simulated limit-order fill at exactly `threshold`.
+
+    Fires only on a true crossing: price must have been observed strictly
+    above threshold at some earlier snapshot and then touch or drop below it.
+    Markets that open at-or-below threshold are skipped — we never could
+    have rested that limit order before the market began.
+    """
+    seen_above = False
+    for point in price_history:
+        if not seen_above:
+            if point["no_price"] > threshold:
+                seen_above = True
+            continue
+        if point["no_price"] <= threshold:
+            return (threshold, point["timestamp"])
+    return None
+
 def time_snapshot(created_at: datetime, price_history: list[dict], offset_hours: int) -> tuple[float, datetime] | None:
     if not price_history:
         return None
@@ -38,8 +56,15 @@ STRATEGIES = {
         "fn": price_threshold,
         "params": [{"threshold": t} for t in [0.20, 0.30, 0.40, 0.50, 0.60]],
     },
+    "limit": {
+        "fn": limit,
+        "params": [{"threshold": t} for t in [0.20, 0.30, 0.40, 0.50, 0.60]],
+    },
     "snapshot": {
         "fn": time_snapshot,
-        "params": [{"offset_hours": h} for h in [24, 48, 168]],
+        "params": [
+            {"offset_hours": h}
+            for h in [2, 4, 6, 8, 12, 16, 20, 24, 48, 168]
+        ],
     },
 }

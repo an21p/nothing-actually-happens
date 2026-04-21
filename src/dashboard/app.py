@@ -6,7 +6,13 @@ import streamlit as st
 from sqlalchemy import func
 
 from src.storage.db import get_engine, get_session
-from src.storage.models import Market, PriceSnapshot, BacktestResult, Position
+from src.storage.models import (
+    BacktestResult,
+    FavoriteStrategy,
+    Market,
+    Position,
+    PriceSnapshot,
+)
 from src.backtester.engine import run_all_strategies, run_backtest
 from src.collector.runner import collect_new
 from src.live.sizing import fixed_notional, fixed_shares
@@ -16,8 +22,20 @@ st.set_page_config(page_title="Polymarket Backtester", layout="wide")
 STRATEGY_DESCRIPTIONS = {
     "at_creation": 'Buys the "NO" token at the first recorded price after market creation. Baseline strategy to measure early entry timing.',
     "threshold": 'Waits for the "NO" token price to drop to a specific level before buying. Tests entry discipline by requiring a minimum discount.',
+    "limit": 'Simulated limit order at exactly `threshold`. Only fires on a true crossing (price must have been observed above threshold first).',
     "snapshot": 'Buys the "NO" token at a fixed time offset after market creation (24h, 48h, or 7d). Tests whether fixed timing works as an edge.',
 }
+
+def load_favorites(session) -> set[str]:
+    return {row.strategy for row in session.query(FavoriteStrategy).all()}
+
+
+def toggle_favorite(session, strategy: str, add: bool) -> None:
+    if add:
+        session.merge(FavoriteStrategy(strategy=strategy))
+    else:
+        session.query(FavoriteStrategy).filter_by(strategy=strategy).delete()
+    session.commit()
 
 SELECTION_MODE_DESCRIPTIONS = {
     "__earliest_created": 'Deduplicates near-duplicate markets (same question, different dates — e.g. "Will X happen by Jan 15?" vs. "...by Feb 1?"). Within each template group, keeps only the market created earliest, then walks forward: a later market is only added if it starts after all previously kept markets have resolved. Prevents stacking correlated trades on the same underlying question.',
@@ -57,8 +75,11 @@ all_categories = [
     for row in session.query(Market.category).distinct().all()
     if row[0]
 ]
+default_categories = (
+    ["geopolitical"] if "geopolitical" in all_categories else all_categories
+)
 selected_categories = st.sidebar.multiselect(
-    "Categories", all_categories, default=all_categories
+    "Categories", all_categories, default=default_categories
 )
 
 # Date range
@@ -183,6 +204,24 @@ def render_thesis_overview():
         fig.update_yaxes(range=[0, 1], tickformat=".0%")
         st.plotly_chart(fig, width="stretch")
 
+    st.markdown("### Findings")
+    st.markdown(
+        "Two strategies stand out across the current sweep (both with the "
+        "`earliest_created` dedup, which removes correlated near-duplicate markets):\n\n"
+        "- **`threshold_0.3__earliest_created`** — highest ROI. Waits for the NO "
+        "price to drop to 0.3 or below before entering. The payoff is asymmetric: "
+        "a losing trade caps at roughly -0.3 per share, while a winner pays "
+        "≥0.7. Even with a modest win rate, the geometry of the payoff is "
+        "enough to produce large ROI.\n"
+        "- **`snapshot_24__earliest_created`** — highest win rate. Buys NO at a "
+        "fixed 24h-after-creation snapshot. By 24h the early volatility has "
+        "decayed and markets that were going to resolve Yes have usually "
+        "already moved decisively; what's left is dominated by the base-rate "
+        "drift toward No. Lower ROI than the threshold strategy because "
+        "entries are not discount-priced, but win consistency is higher.\n\n"
+        "These two are favourited on the Strategy Comparison tab."
+    )
+
 
 # ---- View: Strategy Comparison ----
 
@@ -303,6 +342,8 @@ that you hold all the way to resolution (no early exit).
         st.info("No results match your filters.")
         return
 
+    favorites = load_favorites(session)
+
     # Group by strategy
     strategy_groups: dict[str, list] = {}
     for r in all_results:
@@ -318,7 +359,15 @@ that you hold all the way to resolution (no early exit).
         total_pnl = sum(profits)
         total_cost = sum(entry_costs)
         roi = (total_pnl / total_cost * 100) if total_cost else None
+        # Sharpe = mean(profit) / stdev(profit). Needs ≥2 trades and non-zero std.
+        sharpe = None
+        if total >= 2:
+            series = pd.Series(profits)
+            std = series.std()
+            if std and std > 0:
+                sharpe = series.mean() / std
         rows.append({
+            "Fav": "★" if strategy in favorites else "",
             "Strategy": strategy,
             "Trades": total,
             "Win Rate": (wins / total * 100) if total else None,
@@ -326,22 +375,30 @@ that you hold all the way to resolution (no early exit).
             "Total P&L": total_pnl,
             "Cost": total_cost,
             "ROI": roi,
+            "Sharpe": sharpe,
             "_avg_ev": avg_ev or 0,
-            "_win_rate": wins / total if total else 0,
-            "_roi": roi if roi is not None else float("-inf"),
+            "_sharpe": sharpe if sharpe is not None else float("-inf"),
+            "_favorite": strategy in favorites,
         })
 
-    df = pd.DataFrame(rows).sort_values("_roi", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(
+        ["_favorite", "_sharpe"], ascending=[False, False]
+    ).reset_index(drop=True)
 
-    display_df = df.drop(columns=["_avg_ev", "_win_rate", "_roi"])
+    display_df = df.drop(columns=["_avg_ev", "_sharpe", "_favorite"])
     ev_values = df["_avg_ev"]
-    styled = display_df.style.apply(
-        lambda row: (
-            ["background-color: rgba(40, 167, 69, 0.1)"] * len(row) if ev_values.iloc[row.name] > 0
-            else ["background-color: rgba(220, 53, 69, 0.1)"] * len(row) if ev_values.iloc[row.name] < 0
-            else [""] * len(row)
-        ), axis=1
-    )
+    fav_values = df["_favorite"]
+
+    def _row_style(row):
+        if fav_values.iloc[row.name]:
+            return ["background-color: rgba(255, 193, 7, 0.25); font-weight: 600"] * len(row)
+        if ev_values.iloc[row.name] > 0:
+            return ["background-color: rgba(40, 167, 69, 0.1)"] * len(row)
+        if ev_values.iloc[row.name] < 0:
+            return ["background-color: rgba(220, 53, 69, 0.1)"] * len(row)
+        return [""] * len(row)
+
+    styled = display_df.style.apply(_row_style, axis=1)
     event = st.dataframe(
         styled,
         width="stretch",
@@ -354,12 +411,25 @@ that you hold all the way to resolution (no early exit).
             "Total P&L": st.column_config.NumberColumn(format="$%.2f"),
             "Cost": st.column_config.NumberColumn(format="$%.2f"),
             "ROI": st.column_config.NumberColumn(format="%.2f%%"),
+            "Sharpe": st.column_config.NumberColumn(
+                format="%.3f",
+                help="Per-trade Sharpe: mean(profit) / stdev(profit). Default sort.",
+            ),
         },
     )
 
     selected_rows = event.selection.rows if event and event.selection else []
     if selected_rows:
         selected_strategy = display_df.iloc[selected_rows[0]]["Strategy"]
+        is_fav = selected_strategy in favorites
+        btn_label = (
+            f"★ Remove {selected_strategy} from favorites"
+            if is_fav
+            else f"☆ Add {selected_strategy} to favorites"
+        )
+        if st.button(btn_label, key="toggle_fav"):
+            toggle_favorite(session, selected_strategy, add=not is_fav)
+            st.rerun()
         render_trade_breakdown(selected_strategy, strategy_groups[selected_strategy])
 
     st.markdown("### Strategy Descriptions")
