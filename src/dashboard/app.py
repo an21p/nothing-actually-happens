@@ -125,7 +125,6 @@ for i, group in enumerate(VIEW_GROUPS):
     st.sidebar.radio(
         f"view_group_{i}_label",
         group,
-        index=idx,
         key=key,
         on_change=_on_view_group_pick,
         args=(i,),
@@ -665,7 +664,11 @@ def _render_positions_panel(
     now: datetime,
 ) -> None:
     """Render metrics + open/closed tables + equity curve for a filtered set."""
-    open_pos = [p for p in positions if p.status == "open"]
+    open_pos = sorted(
+        (p for p in positions if p.status == "open"),
+        key=lambda p: abs(p.unrealized_pnl or 0.0),
+        reverse=True,
+    )
     closed_pos = [p for p in positions if p.status != "open"]
 
     realized = sum((p.realized_pnl or 0.0) for p in closed_pos)

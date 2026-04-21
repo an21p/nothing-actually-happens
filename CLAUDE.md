@@ -32,7 +32,7 @@ uv run pytest -k threshold
 
 # Live paper-trading bot (reads favorite_strategies table + live_config.yaml)
 cp live_config.example.yaml live_config.yaml   # first-time setup
-uv run python -m src.live.runner                # one pass; cron this every 6h
+uv run python -m src.live.runner                # one pass; cron this every 2h
 uv run python -m src.live.runner --dry-run      # no DB writes
 ```
 
@@ -68,7 +68,7 @@ SQLAlchemy 2.0 ORM models: `Market`, `PriceSnapshot`, `BacktestResult`. `db.get_
 Single-file Streamlit app (`app.py`). Sidebar category multiselect + date-range picker feed every query via `_apply_date_filter`. Reads the latest `run_id` to render the default metrics view. There's a button that calls `run_all_strategies` directly — running backtests from the UI writes to the same DB.
 
 ### `src/live/`
-Cron-friendly paper-trading runner driven by the `favorite_strategies` DB table (populated via the dashboard Strategy Comparison star-toggle) plus `live_config.yaml` (per-strategy bankroll + shares-per-trade). Each enabled favorite gets its own independent bankroll that compounds on wins: each trade locks `shares * entry_price`, and on resolution the full `shares * exit_price` returns (1.0 for a winning No-resolution, 0 for a loss). `detect_snapshot_entries` and `detect_threshold_entries` share the `EntrySignal` output; the runner bankroll-gates each signal before `executor.open_position`. Scope is geopolitical-only; cron cadence is 6 hours (±12h snapshot tolerance absorbs this comfortably). Secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) stay in env; structural settings live in `live_config.yaml` (gitignored — copy from `live_config.example.yaml`).
+Cron-friendly paper-trading runner driven by the `favorite_strategies` DB table (populated via the dashboard Strategy Comparison star-toggle) plus `live_config.yaml` (per-strategy bankroll + shares-per-trade). Each enabled favorite gets its own independent bankroll that compounds on wins: each trade locks `shares * entry_price`, and on resolution the full `shares * exit_price` returns (1.0 for a winning No-resolution, 0 for a loss). `detect_snapshot_entries` and `detect_threshold_entries` share the `EntrySignal` output; the runner bankroll-gates each signal before `executor.open_position`. Scope is geopolitical-only; cron cadence is 2 hours (8h snapshot grace window absorbs this comfortably — 4 consecutive ticks per market). Secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) stay in env; structural settings live in `live_config.yaml` (gitignored — copy from `live_config.example.yaml`).
 
 ## Conventions worth knowing
 

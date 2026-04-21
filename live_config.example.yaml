@@ -9,9 +9,9 @@ categories:
 
 # Grace window after the snapshot target age. Entry window is
 # [offset, offset + tolerance_hours] — no early entries, `tolerance_hours`
-# of lateness allowed. With tolerance=24h + 6h cron, snapshot_24 gets up
-# to 4 consecutive ticks to be caught (ages ~24, 30, 36, 42, 48).
-tolerance_hours: 24
+# of lateness allowed. With tolerance=8h + 2h cron, snapshot_24 gets up
+# to 4 consecutive ticks to be caught (ages ~24, 26, 28, 30, 32).
+tolerance_hours: 8
 
 # "paper" (writes simulated fills to DB) or "live" (stub; not wired).
 executor: paper

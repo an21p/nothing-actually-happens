@@ -1,6 +1,6 @@
 """One-pass orchestrator for the multi-strategy live paper-trading bot.
 
-Run by cron every ~6 hours. In a single pass:
+Run by cron every 2 hours. In a single pass:
 
   1. Fetch open markets from Gamma and upsert rows.
   2. Load favorites from the DB + config.

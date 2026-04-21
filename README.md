@@ -74,7 +74,7 @@ uv run python -m src.live.runner
 uv run python -m src.live.runner --dry-run
 ```
 
-Run it on a 2-hour cron. The snapshot strategies have a ±12h tolerance window, so 2h cadence leaves comfortable headroom:
+Run it on a 2-hour cron. The snapshot strategies have an 8h grace window after the target age, so 2h cadence gives each market 4 consecutive chances to be caught:
 
 ```cron
 # crontab -e — logs to /tmp/polymarket-live.log
