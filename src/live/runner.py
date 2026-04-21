@@ -31,9 +31,13 @@ from src.live.executor import Executor, get_executor
 from src.live.favorites import Favorite, load_favorites
 from src.live.notifier import Notifier, get_notifier
 from src.live.resolution import sync_resolutions
-from src.live.signals import detect_snapshot_entries, detect_threshold_entries
+from src.live.signals import (
+    detect_snapshot_entries,
+    detect_threshold_entries,
+    enumerate_candidates,
+)
 from src.live.sizing import SizingResult
-from src.storage.models import Market, Position
+from src.storage.models import CandidateSnapshot, Market, Position
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +92,7 @@ def run_once(
         "positions_opened": 0,
         "positions_marked": 0,
         "positions_resolved": 0,
+        "candidate_rows": 0,
         "dry_run": dry_run,
     }
     tick_t0 = time.perf_counter()
@@ -222,10 +227,42 @@ def run_once(
             fav.label, opened_here, skipped_here, time.perf_counter() - fav_t0,
         )
 
-    # 4. Mark-to-market open positions.
+    # 4. Persist candidate snapshot for the dashboard.
+    # Run after opens so newly-entered markets reflect "entered" state.
+    # Uses the same cached `quote_fn`, so no extra HTTP calls.
+    step_t0 = time.perf_counter()
+    session.flush()
+    current_bankrolls = {
+        f.label: compute_bankroll(session, f.label, f.starting_bankroll)
+        for f in favorites
+    }
+    cands = enumerate_candidates(
+        session, favorites, now=now,
+        tolerance_hours=config.tolerance_hours,
+        quote_fn=quote_fn, bankrolls=current_bankrolls,
+    )
+    for c in cands:
+        session.add(CandidateSnapshot(
+            snapshot_ts=now,
+            strategy_label=c.favorite.label,
+            market_id=c.market.id,
+            state=c.state,
+            quote=c.quote,
+            target=c.target,
+            eta_hours=c.eta_hours,
+            age_hours=c.age_hours,
+            blocked_by_bankroll=c.blocked_by_bankroll,
+        ))
+    stats["candidate_rows"] = len(cands)
+    logger.info(
+        "step4.candidates: %d rows elapsed=%.2fs",
+        len(cands), time.perf_counter() - step_t0,
+    )
+
+    # 5. Mark-to-market open positions.
     step_t0 = time.perf_counter()
     open_positions = session.query(Position).filter(Position.status == "open").all()
-    logger.info("step4.mark: %d open positions", len(open_positions))
+    logger.info("step5.mark: %d open positions", len(open_positions))
     for pos in open_positions:
         market = session.get(Market, pos.market_id)
         if market is None:
@@ -240,11 +277,11 @@ def run_once(
         executor.mark_position(pos, mid=mid, at=now)
         stats["positions_marked"] += 1
     logger.info(
-        "step4.mark: %d marked elapsed=%.2fs",
+        "step5.mark: %d marked elapsed=%.2fs",
         stats["positions_marked"], time.perf_counter() - step_t0,
     )
 
-    # 5. Sync resolutions + notify.
+    # 6. Sync resolutions + notify.
     step_t0 = time.perf_counter()
     closed = sync_resolutions(session, executor, now=now)
     stats["positions_resolved"] = len(closed)
@@ -257,7 +294,7 @@ def run_once(
         except Exception as exc:  # noqa: BLE001
             logger.warning("notifier.on_resolution failed: %s", exc)
     logger.info(
-        "step5.resolve: %d positions resolved elapsed=%.2fs",
+        "step6.resolve: %d positions resolved elapsed=%.2fs",
         stats["positions_resolved"], time.perf_counter() - step_t0,
     )
 

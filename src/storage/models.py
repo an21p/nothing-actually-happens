@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, DateTime, Text, ForeignKey, Integer
+from sqlalchemy import String, Float, DateTime, Text, ForeignKey, Integer, Boolean, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -97,3 +97,22 @@ class Position(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     market: Mapped["Market"] = relationship(back_populates="positions")
+
+
+class CandidateSnapshot(Base):
+    __tablename__ = "candidate_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    strategy_label: Mapped[str] = mapped_column(String)
+    market_id: Mapped[str] = mapped_column(ForeignKey("markets.id"))
+    state: Mapped[str] = mapped_column(String)
+    quote: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eta_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    age_hours: Mapped[float] = mapped_column(Float)
+    blocked_by_bankroll: Mapped[bool] = mapped_column(Boolean)
+
+    __table_args__ = (
+        Index("ix_candidate_snapshots_ts", "snapshot_ts"),
+    )

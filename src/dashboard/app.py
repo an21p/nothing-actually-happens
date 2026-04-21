@@ -8,6 +8,7 @@ from sqlalchemy import func
 from src.storage.db import get_engine, get_session
 from src.storage.models import (
     BacktestResult,
+    CandidateSnapshot,
     FavoriteStrategy,
     Market,
     Position,
@@ -64,10 +65,78 @@ def get_db_session():
 
 # ---- Sidebar ----
 
+st.markdown(
+    """
+<style>
+section[data-testid="stSidebar"] [data-testid="stElementContainer"] {
+    margin-bottom: 0 !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    gap: 0.15rem;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+    padding: 0.1rem 0;
+}
+section[data-testid="stSidebar"] hr {
+    margin: 0.25rem 0 !important;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 st.sidebar.title("Nothing Ever Happens")
 st.sidebar.markdown("*Polymarket Backtester*")
 
 session = get_db_session()
+
+# ---- Navigation ----
+
+VIEW_GROUPS = [
+    ["Thesis Overview", "Live Positions", "Candidates"],
+    ["Strategy Comparison", "Sizing Comparison"],
+    ["Market Browser"],
+]
+ALL_VIEWS = [v for g in VIEW_GROUPS for v in g]
+
+_qp_view = st.query_params.get("view")
+if "view" not in st.session_state:
+    st.session_state["view"] = _qp_view if _qp_view in ALL_VIEWS else "Live Positions"
+
+
+def _on_view_group_pick(group_idx: int) -> None:
+    picked = st.session_state.get(f"view_group_{group_idx}")
+    if picked is None:
+        return
+    st.session_state["view"] = picked
+    for j in range(len(VIEW_GROUPS)):
+        if j != group_idx:
+            st.session_state[f"view_group_{j}"] = None
+
+
+st.sidebar.markdown("**View**")
+for i, group in enumerate(VIEW_GROUPS):
+    key = f"view_group_{i}"
+    current = st.session_state["view"]
+    idx = group.index(current) if current in group else None
+    # Seed session state so the correct group shows the active selection,
+    # while others render unselected.
+    st.session_state[key] = group[idx] if idx is not None else None
+    st.sidebar.radio(
+        f"view_group_{i}_label",
+        group,
+        index=idx,
+        key=key,
+        on_change=_on_view_group_pick,
+        args=(i,),
+        label_visibility="collapsed",
+    )
+    if i < len(VIEW_GROUPS) - 1:
+        st.sidebar.divider()
+
+view = st.session_state["view"]
+if st.query_params.get("view") != view:
+    st.query_params["view"] = view
 
 # Category filter
 all_categories = [
@@ -137,22 +206,6 @@ latest_run_ids = [
     .distinct()
     .all()
 ]
-
-# ---- Navigation ----
-
-view = st.sidebar.radio(
-    "View",
-    [
-        "Thesis Overview",
-        "Live Positions",
-        "Candidates",
-        "Strategy Comparison",
-        "Sizing Comparison",
-        "Deep Dive",
-        "Market Browser",
-    ],
-)
-
 
 # ---- View: Thesis Overview ----
 
@@ -276,6 +329,44 @@ def render_trade_breakdown(strategy_label: str, results: list) -> None:
             "URL": st.column_config.LinkColumn("Link", display_text="open"),
         },
     )
+
+
+def render_strategy_pnl_curve(strategy_label: str, results: list) -> None:
+    """Cumulative P&L over time for a single strategy, broken down by category."""
+    if not results:
+        return
+    df = pd.DataFrame([{
+        "profit": r.profit,
+        "category": r.category,
+        "entry_timestamp": r.entry_timestamp,
+    } for r in results]).sort_values("entry_timestamp")
+
+    by_category = df.copy()
+    by_category["cumulative_pnl"] = by_category.groupby("category")["profit"].cumsum()
+
+    total = df.copy()
+    total["cumulative_pnl"] = total["profit"].cumsum()
+    total["category"] = "Total"
+
+    curve_df = pd.concat([by_category, total], ignore_index=True)
+
+    st.caption(
+        "Running total of profits over time, broken down by category with an "
+        "overall total. An upward slope means the strategy is consistently "
+        "profitable; flat or declining signals it's losing edge."
+    )
+    fig_pnl = px.line(
+        curve_df, x="entry_timestamp", y="cumulative_pnl",
+        color="category",
+        title=f"Cumulative P&L — {strategy_label}",
+        labels={"entry_timestamp": "Date", "cumulative_pnl": "Cumulative P&L ($)", "category": "Category"},
+    )
+    for trace in fig_pnl.data:
+        if trace.name == "Total":
+            trace.line.width = 4
+            trace.line.color = "white"
+    fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray")
+    st.plotly_chart(fig_pnl, width="stretch")
 
 
 def render_strategy_comparison():
@@ -403,6 +494,7 @@ that you hold all the way to resolution (no early exit).
     event = st.dataframe(
         styled,
         width="stretch",
+        height=35 * 5 + 38,
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
@@ -431,6 +523,7 @@ that you hold all the way to resolution (no early exit).
         if st.button(btn_label, key="toggle_fav"):
             toggle_favorite(session, selected_strategy, add=not is_fav)
             st.rerun()
+        render_strategy_pnl_curve(selected_strategy, strategy_groups[selected_strategy])
         render_trade_breakdown(selected_strategy, strategy_groups[selected_strategy])
 
     st.markdown("### Strategy Descriptions")
@@ -445,90 +538,6 @@ that you hold all the way to resolution (no early exit).
     )
     for name, desc in SELECTION_MODE_DESCRIPTIONS.items():
         st.markdown(f"- **{name}** — {desc}")
-
-
-# ---- View: Deep Dive Explorer ----
-
-def render_deep_dive():
-    st.header("Deep Dive Explorer")
-
-    if not latest_run_ids:
-        st.warning("No backtest results found. Run a backtest first.")
-        return
-
-    dive_q = (
-        session.query(BacktestResult)
-        .filter(BacktestResult.run_id.in_(latest_run_ids))
-        .filter(BacktestResult.strategy.in_(selected_strategies))
-        .filter(BacktestResult.category.in_(selected_categories))
-    )
-    dive_q = _apply_date_filter(dive_q, BacktestResult.entry_timestamp)
-    results = dive_q.all()
-
-    if not results:
-        st.info("No results match your filters.")
-        return
-
-    df = pd.DataFrame([{
-        "entry_price": r.entry_price,
-        "profit": r.profit,
-        "category": r.category,
-        "strategy": r.strategy,
-        "entry_timestamp": r.entry_timestamp,
-    } for r in results])
-
-    # Scatter plot: entry price vs profit
-    st.caption("Each dot is a single trade. Shows whether cheaper entries consistently lead to higher profits, and how categories cluster.")
-    fig_scatter = px.scatter(
-        df, x="entry_price", y="profit", color="category",
-        title="Entry Price vs Profit",
-        labels={"entry_price": '"NO" Entry Price', "profit": "Profit per Share"},
-        hover_data=["strategy"],
-    )
-    fig_scatter.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig_scatter, width="stretch")
-
-    # Cumulative P&L curve — strategies ordered by total P&L descending
-    strategies_by_pnl = (
-        df.groupby("strategy")["profit"].sum().sort_values(ascending=False).index.tolist()
-    )
-    strategy_for_curve = st.selectbox("P&L Curve Strategy", strategies_by_pnl)
-    desc = get_strategy_description(strategy_for_curve)
-    if desc:
-        st.caption(desc)
-    st.caption("Running total of profits over time, broken down by category with an overall total. An upward slope means the strategy is consistently profitable; flat or declining signals it's losing edge.")
-    strategy_df = df[df["strategy"] == strategy_for_curve].sort_values("entry_timestamp")
-
-    by_category = strategy_df.copy()
-    by_category["cumulative_pnl"] = by_category.groupby("category")["profit"].cumsum()
-
-    total = strategy_df.copy()
-    total["cumulative_pnl"] = total["profit"].cumsum()
-    total["category"] = "Total"
-
-    curve_df = pd.concat([by_category, total], ignore_index=True)
-
-    fig_pnl = px.line(
-        curve_df, x="entry_timestamp", y="cumulative_pnl",
-        color="category",
-        title=f"Cumulative P&L — {strategy_for_curve}",
-        labels={"entry_timestamp": "Date", "cumulative_pnl": "Cumulative P&L ($)", "category": "Category"},
-    )
-    for trace in fig_pnl.data:
-        if trace.name == "Total":
-            trace.line.width = 4
-            trace.line.color = "white"
-    fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig_pnl, width="stretch")
-
-    # Entry price histogram
-    st.caption("Shows where most entry prices land. A concentration at higher prices means fewer discount opportunities were available.")
-    fig_hist = px.histogram(
-        df, x="entry_price", nbins=30, color="category",
-        title='Distribution of "NO" Entry Prices',
-        labels={"entry_price": '"NO" Token Price at Entry'},
-    )
-    st.plotly_chart(fig_hist, width="stretch")
 
 
 # ---- View: Market Browser ----
@@ -811,15 +820,13 @@ def render_candidates():
     from src.live.bankroll import compute_bankroll
     from src.live.config import load_config
     from src.live.favorites import load_favorites
-    from src.live.quotes import fetch_midpoint
-    from src.live.signals import enumerate_candidates
-    from datetime import datetime, timezone
 
     st.header("Candidates")
     st.caption(
         "Open markets scored against each favorited strategy. `ready` = would fire "
         "next tick; `watching` = threshold not hit; `waiting`/`expired` = snapshot "
-        "window; `entered` = position already exists. Read-only."
+        "window; `entered` = position already exists. Read-only snapshot written by "
+        "the cron runner — age and quote are as-of the snapshot, not live."
     )
 
     try:
@@ -838,11 +845,10 @@ def render_candidates():
         )
         return
 
+    # --- Bankroll summary (live — fast query against Position table) ---
     bankrolls = {
         f.label: compute_bankroll(session, f.label, f.starting_bankroll) for f in favs
     }
-
-    # --- Bankroll summary ---
     st.subheader("Bankrolls")
     rows = []
     for f in favs:
@@ -868,15 +874,27 @@ def render_candidates():
         },
     )
 
-    # --- Candidate tabs ---
+    # --- Candidate tabs (from latest persisted snapshot) ---
     st.subheader("Candidates")
-    now = datetime.now(tz=timezone.utc)
-    cands = enumerate_candidates(
-        session, favs,
-        now=now,
-        tolerance_hours=config.tolerance_hours,
-        quote_fn=fetch_midpoint,
-        bankrolls=bankrolls,
+    latest_ts = session.query(func.max(CandidateSnapshot.snapshot_ts)).scalar()
+    if latest_ts is None:
+        st.info(
+            "No candidate snapshot yet. Run `uv run python -m src.live.runner` "
+            "(or wait for the next cron tick) to populate this view."
+        )
+        return
+    if latest_ts.tzinfo is None:
+        latest_ts = latest_ts.replace(tzinfo=timezone.utc)
+
+    age = datetime.now(tz=timezone.utc) - latest_ts
+    age_hours = age.total_seconds() / 3600.0
+    st.caption(f"Snapshot taken {latest_ts.isoformat()} ({age_hours:.1f}h ago).")
+
+    snap_rows = (
+        session.query(CandidateSnapshot, Market)
+        .join(Market, Market.id == CandidateSnapshot.market_id)
+        .filter(CandidateSnapshot.snapshot_ts == latest_ts)
+        .all()
     )
 
     state_order = {"ready": 0, "watching": 1, "waiting": 2, "expired": 3, "entered": 4}
@@ -884,26 +902,26 @@ def render_candidates():
     tabs = st.tabs([f.label for f in favs])
     for tab, fav in zip(tabs, favs):
         with tab:
-            fav_cands = [c for c in cands if c.favorite.label == fav.label]
-            if not fav_cands:
-                st.info("No open markets in scope.")
+            fav_rows = [(c, m) for c, m in snap_rows if c.strategy_label == fav.label]
+            if not fav_rows:
+                st.info("No rows in this snapshot for this strategy.")
                 continue
-            fav_cands.sort(key=lambda c: (
-                state_order.get(c.state, 99),
-                c.quote if c.quote is not None else 99,
-                c.eta_hours if c.eta_hours is not None else 9999,
+            fav_rows.sort(key=lambda pair: (
+                state_order.get(pair[0].state, 99),
+                pair[0].quote if pair[0].quote is not None else 99,
+                pair[0].eta_hours if pair[0].eta_hours is not None else 9999,
             ))
             rows = []
-            for c in fav_cands[:200]:
+            for c, m in fav_rows[:200]:
                 rows.append({
                     "State": c.state,
-                    "Question": c.market.question,
+                    "Question": m.question,
                     "Quote": c.quote,
                     "Target": c.target,
                     "ETA (h)": c.eta_hours,
                     "Age (h)": c.age_hours,
                     "Blocked?": "!" if c.blocked_by_bankroll else "",
-                    "URL": c.market.source_url or "",
+                    "URL": m.source_url or "",
                 })
             st.dataframe(
                 pd.DataFrame(rows),
@@ -1136,8 +1154,6 @@ if view == "Thesis Overview":
     render_thesis_overview()
 elif view == "Strategy Comparison":
     render_strategy_comparison()
-elif view == "Deep Dive":
-    render_deep_dive()
 elif view == "Market Browser":
     render_market_browser()
 elif view == "Live Positions":

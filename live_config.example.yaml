@@ -7,9 +7,11 @@
 categories:
   - geopolitical
 
-# Hours of slack on snapshot age windows. With 6h cron ticks, 12h tolerance
-# means a snapshot_24 market can be caught on any of 4 consecutive ticks.
-tolerance_hours: 12
+# Grace window after the snapshot target age. Entry window is
+# [offset, offset + tolerance_hours] — no early entries, `tolerance_hours`
+# of lateness allowed. With tolerance=24h + 6h cron, snapshot_24 gets up
+# to 4 consecutive ticks to be caught (ages ~24, 30, 36, 42, 48).
+tolerance_hours: 24
 
 # "paper" (writes simulated fills to DB) or "live" (stub; not wired).
 executor: paper

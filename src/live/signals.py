@@ -89,7 +89,10 @@ def detect_snapshot_entries(
     quote_fn: Callable[[str], float | None],
 ) -> list[EntrySignal]:
     offset = fav.params["offset_hours"]
-    low = offset - tolerance_hours
+    # Asymmetric window: no early entries, `tolerance_hours` grace after
+    # the target age. A market must be aged in [offset, offset + tolerance]
+    # to be a valid snapshot entry.
+    low = offset
     high = offset + tolerance_hours
     oldest = now - timedelta(hours=high)
     youngest = now - timedelta(hours=low)
@@ -197,7 +200,7 @@ def _classify_snapshot(
     created = _ensure_utc(m.created_at)
     age_hours = (now - created).total_seconds() / 3600.0
     offset = fav.params["offset_hours"]
-    low = offset - tolerance_hours
+    low = offset
     high = offset + tolerance_hours
     if age_hours < low:
         return "waiting", low - age_hours

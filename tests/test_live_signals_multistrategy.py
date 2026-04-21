@@ -58,11 +58,21 @@ def test_snapshot_detects_market_at_24h(session):
 
 
 def test_snapshot_detects_within_tolerance(session):
-    _add_market(session, "young", created_at=NOW - timedelta(hours=14))
-    _add_market(session, "old", question="Other?", created_at=NOW - timedelta(hours=34))
+    # Asymmetric window [offset, offset + tolerance] = [24, 36].
+    _add_market(session, "just_past", created_at=NOW - timedelta(hours=25))
+    _add_market(session, "near_ceiling", question="Other?", created_at=NOW - timedelta(hours=35))
     session.commit()
     signals = detect_snapshot_entries(session, SNAP, now=NOW, tolerance_hours=12, quote_fn=_quote(0.5))
-    assert {s.market.id for s in signals} == {"young", "old"}
+    assert {s.market.id for s in signals} == {"just_past", "near_ceiling"}
+
+
+def test_snapshot_rejects_market_just_before_offset(session):
+    # Under asymmetric semantics, a market younger than `offset_hours` must
+    # not fire — no early entries. 23h is just below the 24h floor.
+    _add_market(session, "tooYoung", created_at=NOW - timedelta(hours=23))
+    session.commit()
+    signals = detect_snapshot_entries(session, SNAP, now=NOW, tolerance_hours=12, quote_fn=_quote(0.5))
+    assert signals == []
 
 
 def test_snapshot_skips_outside_tolerance(session):
