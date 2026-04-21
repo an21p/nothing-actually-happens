@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.backtester.selection import _select_markets, _template_key
+from src.live.bankroll import BankrollState
 from src.live.favorites import Favorite
 from src.storage.models import Market, Position
 
@@ -176,3 +177,105 @@ def detect_threshold_entries(
         )
         for m in selected
     ]
+
+
+@dataclass(frozen=True)
+class Candidate:
+    favorite: Favorite
+    market: Market
+    state: str  # "ready" | "watching" | "waiting" | "expired" | "entered"
+    quote: float | None
+    target: float | None
+    eta_hours: float | None
+    age_hours: float
+    blocked_by_bankroll: bool
+
+
+def _classify_snapshot(
+    m: Market, fav: Favorite, *, now: datetime, tolerance_hours: int
+) -> tuple[str, float | None]:
+    created = _ensure_utc(m.created_at)
+    age_hours = (now - created).total_seconds() / 3600.0
+    offset = fav.params["offset_hours"]
+    low = offset - tolerance_hours
+    high = offset + tolerance_hours
+    if age_hours < low:
+        return "waiting", low - age_hours
+    if age_hours > high:
+        return "expired", None
+    return "ready", None
+
+
+def _classify_threshold(
+    quote: float | None, fav: Favorite
+) -> str:
+    threshold = fav.params["threshold"]
+    if quote is None:
+        return "watching"
+    return "ready" if quote <= threshold else "watching"
+
+
+def enumerate_candidates(
+    session: Session,
+    favs: list[Favorite],
+    *,
+    now: datetime,
+    tolerance_hours: int,
+    quote_fn: Callable[[str], float | None],
+    bankrolls: dict[str, BankrollState],
+) -> list[Candidate]:
+    markets = _load_open_geopolitical_markets(session)
+    # Cache: quote per no_token_id (called once per market regardless of fav count).
+    quote_cache: dict[str, float | None] = {}
+
+    def _get_quote(token_id: str) -> float | None:
+        if token_id not in quote_cache:
+            quote_cache[token_id] = quote_fn(token_id)
+        return quote_cache[token_id]
+
+    # Per-strategy: markets already entered by this strategy.
+    entered_by: dict[str, set[str]] = {
+        fav.label: _blocked_by_prior_position(session, fav.label) for fav in favs
+    }
+
+    results: list[Candidate] = []
+    for m in markets:
+        age_hours = (now - _ensure_utc(m.created_at)).total_seconds() / 3600.0
+        for fav in favs:
+            if m.id in entered_by.get(fav.label, set()):
+                state = "entered"
+                quote = None
+                target = None
+                eta = None
+            elif fav.strategy_name == "snapshot":
+                state, eta = _classify_snapshot(
+                    m, fav, now=now, tolerance_hours=tolerance_hours
+                )
+                quote = _get_quote(m.no_token_id) if state == "ready" else None
+                target = None
+            else:  # threshold
+                quote = _get_quote(m.no_token_id)
+                state = _classify_threshold(quote, fav)
+                target = fav.params["threshold"]
+                eta = None
+
+            blocked = False
+            if state == "ready" and quote is not None:
+                br = bankrolls.get(fav.label)
+                cost = fav.shares_per_trade * quote
+                if br is not None and cost > br.available:
+                    blocked = True
+
+            results.append(
+                Candidate(
+                    favorite=fav,
+                    market=m,
+                    state=state,
+                    quote=quote,
+                    target=target,
+                    eta_hours=eta,
+                    age_hours=age_hours,
+                    blocked_by_bankroll=blocked,
+                )
+            )
+    return results
