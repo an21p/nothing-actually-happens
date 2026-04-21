@@ -1,48 +1,51 @@
-"""Live bot configuration loaded from environment variables."""
+"""Live bot configuration loaded from YAML + environment variables.
+
+Structural settings (categories, per-strategy bankrolls) come from
+`live_config.yaml`. Secrets (telegram tokens) still come from env.
+"""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    label: str
+    starting_bankroll: float
+    shares_per_trade: float
 
 
 @dataclass(frozen=True)
 class LiveConfig:
     categories: list[str]
-    sizing_rule: str
-    sizing_notional: float
-    sizing_shares: float
-    bankroll_start: float
-    max_open_positions: int
-    executor: str
-    max_age_hours: int
     tolerance_hours: int
+    executor: str
+    strategies: dict[str, StrategyConfig]  # keyed by label
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
 
 
-def _csv(value: str) -> list[str]:
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def load_config() -> LiveConfig:
-    categories_raw = os.getenv("LIVE_CATEGORIES")
-    categories = (
-        _csv(categories_raw)
-        if categories_raw
-        else ["geopolitical", "political", "culture"]
-    )
-
+def load_config(path: Path = Path("live_config.yaml")) -> LiveConfig:
+    raw = yaml.safe_load(Path(path).read_text())
+    strategies_raw = raw["strategies"] or {}
+    strategies = {
+        label: StrategyConfig(
+            label=label,
+            starting_bankroll=float(block["starting_bankroll"]),
+            shares_per_trade=float(block["shares_per_trade"]),
+        )
+        for label, block in strategies_raw.items()
+    }
     return LiveConfig(
-        categories=categories,
-        sizing_rule=os.getenv("LIVE_SIZING_RULE", "fixed_shares"),
-        sizing_notional=float(os.getenv("LIVE_SIZING_NOTIONAL", "10")),
-        sizing_shares=float(os.getenv("LIVE_SIZING_SHARES", "10")),
-        bankroll_start=float(os.getenv("LIVE_BANKROLL_START", "10000")),
-        max_open_positions=int(os.getenv("LIVE_MAX_OPEN_POSITIONS", "50")),
-        executor=os.getenv("LIVE_EXECUTOR", "paper"),
-        max_age_hours=int(os.getenv("LIVE_MAX_AGE_HOURS", "24")),
-        tolerance_hours=int(os.getenv("LIVE_TOLERANCE_HOURS", "12")),
+        categories=list(raw["categories"]),
+        tolerance_hours=int(raw["tolerance_hours"]),
+        executor=str(raw["executor"]),
+        strategies=strategies,
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
     )
