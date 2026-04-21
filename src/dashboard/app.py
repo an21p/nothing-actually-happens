@@ -648,63 +648,14 @@ def _humanize_age(delta_seconds: float) -> str:
     return f"{hours / 24:.1f}d"
 
 
-def _position_detail(pos: Position, market: Market | None) -> None:
-    st.markdown(f"### {market.question if market else pos.market_id}")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Entry", f"${pos.entry_price:.4f}")
-    c2.metric(
-        "Current mid",
-        f"${pos.last_mark_price:.4f}" if pos.last_mark_price is not None else "—",
-    )
-    c3.metric(
-        "Unrealized P&L",
-        f"${pos.unrealized_pnl:+,.2f}" if pos.unrealized_pnl is not None else "—",
-    )
-    c4.metric("Shares", f"{pos.size_shares:,.2f}")
-
-    if market is not None and market.source_url:
-        st.markdown(f"[Open on Polymarket]({market.source_url})")
-
-    if market is not None:
-        snapshots = (
-            session.query(PriceSnapshot)
-            .filter_by(market_id=market.id)
-            .order_by(PriceSnapshot.timestamp)
-            .all()
-        )
-        if snapshots:
-            df = pd.DataFrame(
-                [
-                    {"Date": s.timestamp, '"NO" Price': s.no_price, "Source": s.source}
-                    for s in snapshots
-                ]
-            )
-            fig = px.line(
-                df,
-                x="Date",
-                y='"NO" Price',
-                color="Source",
-                title=f'"NO" Price — entry @ ${pos.entry_price:.4f}',
-            )
-            fig.update_yaxes(range=[0, 1])
-            fig.add_hline(
-                y=pos.entry_price, line_dash="dash", line_color="orange",
-                annotation_text="entry",
-            )
-            fig.add_vline(
-                x=pos.entry_timestamp, line_dash="dot", line_color="gray",
-            )
-            st.plotly_chart(fig, width="stretch")
-
-
-def render_live_positions():
-    st.header("Live Positions")
-
-    positions = session.query(Position).all()
-    if not positions:
-        st.info("No live positions yet. Run `uv run python -m src.live.runner`.")
-        return
-
+def _render_positions_panel(
+    positions: list[Position],
+    markets_by_id: dict[str, Market],
+    *,
+    bankroll: "BankrollState | None" = None,
+    now: datetime,
+) -> None:
+    """Render metrics + open/closed tables + equity curve for a filtered set."""
     open_pos = [p for p in positions if p.status == "open"]
     closed_pos = [p for p in positions if p.status != "open"]
 
@@ -713,20 +664,27 @@ def render_live_positions():
     wins = sum(1 for p in closed_pos if (p.realized_pnl or 0.0) > 0)
     win_rate = wins / len(closed_pos) if closed_pos else 0.0
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Open", len(open_pos))
-    c2.metric("Resolved", len(closed_pos))
-    c3.metric("Realized P&L", f"${realized:+,.2f}")
-    c4.metric("Unrealized P&L", f"${unrealized:+,.2f}")
-    c5.metric("Win rate", f"{win_rate:.1%}" if closed_pos else "—")
-
-    market_ids = [p.market_id for p in positions]
-    markets_by_id = {
-        m.id: m
-        for m in session.query(Market).filter(Market.id.in_(market_ids)).all()
-    }
-
-    now = datetime.utcnow()
+    if bankroll is not None:
+        if bankroll.available < bankroll.starting * 0.01:
+            st.warning(
+                f"{bankroll.strategy} is bankroll-exhausted — no new entries "
+                "until a winning position closes."
+            )
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        c1.metric("Starting", f"${bankroll.starting:,.0f}")
+        c2.metric("Available", f"${bankroll.available:,.2f}")
+        c3.metric("Locked", f"${bankroll.locked:,.2f}")
+        c4.metric("Realized P&L", f"${bankroll.realized_pnl:+,.2f}")
+        c5.metric("Unrealized", f"${unrealized:+,.2f}")
+        c6.metric("Win rate", f"{win_rate:.1%}" if closed_pos else "—")
+        c7.metric("Open / Closed", f"{len(open_pos)} / {len(closed_pos)}")
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Open", len(open_pos))
+        c2.metric("Resolved", len(closed_pos))
+        c3.metric("Realized P&L", f"${realized:+,.2f}")
+        c4.metric("Unrealized P&L", f"${unrealized:+,.2f}")
+        c5.metric("Win rate", f"{win_rate:.1%}" if closed_pos else "—")
 
     st.subheader(f"Open positions ({len(open_pos)})")
     if open_pos:
@@ -735,41 +693,28 @@ def render_live_positions():
             m = markets_by_id.get(p.market_id)
             entry_ts = p.entry_timestamp
             age = (now - entry_ts.replace(tzinfo=None)).total_seconds() if entry_ts else 0.0
-            proj_no = (1.0 - p.entry_price) * p.size_shares
             rows.append({
                 "Question": m.question if m else p.market_id,
+                "Strategy": p.strategy,
                 "Category": m.category if m else "",
                 "Age": _humanize_age(age),
                 "Entry": p.entry_price,
                 "Mid": p.last_mark_price,
                 "Shares": p.size_shares,
                 "Unrealized": p.unrealized_pnl,
-                "Projected (No)": proj_no,
                 "Entered": p.entry_timestamp,
-                "id": p.id,
             })
-        df_open = pd.DataFrame(rows)
         st.dataframe(
-            df_open.drop(columns=["id"]),
+            pd.DataFrame(rows),
             width="stretch",
             hide_index=True,
             column_config={
                 "Entry": st.column_config.NumberColumn(format="$%.4f"),
                 "Mid": st.column_config.NumberColumn(format="$%.4f"),
                 "Unrealized": st.column_config.NumberColumn(format="$%+.2f"),
-                "Projected (No)": st.column_config.NumberColumn(format="$%+.2f"),
                 "Entered": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
             },
         )
-
-        selected_q = st.selectbox(
-            "Drill down",
-            options=["—"] + [r["Question"] for r in rows],
-        )
-        if selected_q != "—":
-            pick = next(r for r in rows if r["Question"] == selected_q)
-            pos = session.get(Position, pick["id"])
-            _position_detail(pos, markets_by_id.get(pos.market_id))
 
     st.subheader(f"Resolved positions ({len(closed_pos)})")
     if closed_pos:
@@ -778,15 +723,15 @@ def render_live_positions():
             m = markets_by_id.get(p.market_id)
             rows.append({
                 "Question": m.question if m else p.market_id,
+                "Strategy": p.strategy,
                 "Entry": p.entry_price,
                 "Exit": p.exit_price,
                 "Realized": p.realized_pnl,
                 "Entered": p.entry_timestamp,
                 "Exited": p.exit_timestamp,
             })
-        df_closed = pd.DataFrame(rows)
         st.dataframe(
-            df_closed,
+            pd.DataFrame(rows),
             width="stretch",
             hide_index=True,
             column_config={
@@ -798,7 +743,7 @@ def render_live_positions():
             },
         )
 
-    # Equity curve: cumulative realized, sorted by exit timestamp.
+    # Equity curve = cumulative realized over time.
     realized_rows = sorted(
         [p for p in closed_pos if p.exit_timestamp],
         key=lambda p: p.exit_timestamp,
@@ -810,7 +755,52 @@ def render_live_positions():
         ])
         eq_df["Cumulative"] = eq_df["Realized"].cumsum()
         fig = px.line(eq_df, x="Date", y="Cumulative", title="Cumulative realized P&L")
+        if bankroll is not None:
+            fig.add_hline(y=0, line_dash="dot", line_color="gray")
         st.plotly_chart(fig, width="stretch")
+
+
+def render_live_positions():
+    from src.live.bankroll import compute_bankroll
+    from src.live.config import load_config
+    from src.live.favorites import load_favorites
+
+    st.header("Live Positions")
+
+    positions = session.query(Position).all()
+    if not positions:
+        st.info("No live positions yet. Run `uv run python -m src.live.runner`.")
+        return
+
+    market_ids = [p.market_id for p in positions]
+    markets_by_id = {
+        m.id: m
+        for m in session.query(Market).filter(Market.id.in_(market_ids)).all()
+    }
+    now = datetime.utcnow()
+
+    # Config is optional — the All tab works without it.
+    try:
+        config = load_config()
+        favs = load_favorites(session, config)
+    except FileNotFoundError:
+        config = None
+        favs = []
+
+    tab_labels = ["All"] + [f.label for f in favs]
+    tabs = st.tabs(tab_labels)
+
+    with tabs[0]:
+        _render_positions_panel(positions, markets_by_id, bankroll=None, now=now)
+
+    for tab, fav in zip(tabs[1:], favs):
+        with tab:
+            scoped = [p for p in positions if p.strategy == fav.label]
+            bankroll = compute_bankroll(session, fav.label, fav.starting_bankroll)
+            if not scoped:
+                st.info(f"No positions for {fav.label} yet.")
+                # Still render bankroll metrics so starting bankroll is visible.
+            _render_positions_panel(scoped, markets_by_id, bankroll=bankroll, now=now)
 
 
 # ---- View: Candidates ----
