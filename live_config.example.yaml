@@ -1,0 +1,25 @@
+# live_config.example.yaml
+# Copy to live_config.yaml and edit. live_config.yaml is gitignored.
+#
+# Secrets (telegram tokens) are NOT in this file — they come from
+# environment variables TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
+
+categories:
+  - geopolitical
+
+# Hours of slack on snapshot age windows. With 6h cron ticks, 12h tolerance
+# means a snapshot_24 market can be caught on any of 4 consecutive ticks.
+tolerance_hours: 12
+
+# "paper" (writes simulated fills to DB) or "live" (stub; not wired).
+executor: paper
+
+# Per-strategy settings. Key = label from the favorite_strategies DB table.
+# A favorite without an entry here is skipped with a warning at startup.
+strategies:
+  snapshot_24__earliest_created:
+    starting_bankroll: 1000.0
+    shares_per_trade: 10.0
+  threshold_0.3__earliest_created:
+    starting_bankroll: 1000.0
+    shares_per_trade: 10.0
