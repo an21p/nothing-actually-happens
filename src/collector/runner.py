@@ -1,5 +1,5 @@
 import argparse
-import sys
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -12,6 +12,8 @@ from src.storage.models import Market, PriceSnapshot
 from src.collector.polymarket_api import fetch_resolved_markets
 from src.collector.price_history import fetch_price_history
 from src.collector.polygon_chain import fetch_onchain_prices
+
+logger = logging.getLogger(__name__)
 
 MIN_CREATED_AT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -49,6 +51,7 @@ def collect(
     enrich_onchain: bool = False,
     db_path: str | None = None,
 ):
+    run_t0 = time.perf_counter()
     engine = get_engine(db_path)
     session = get_session(engine)
 
@@ -58,29 +61,47 @@ def collect(
     end_date_max = None
     if earliest:
         end_date_max = earliest.strftime("%Y-%m-%dT%H:%M:%SZ")
-        print(f"Found {len(existing_ids)} existing markets in DB (earliest: {earliest.date()})")
-        print(f"Fetching markets created on or before {earliest.date()}...")
+        logger.info(
+            "collect.start: %d existing markets, earliest=%s, walking backwards",
+            len(existing_ids), earliest.date(),
+        )
     else:
-        print("Empty DB, fetching newest markets...")
+        logger.info("collect.start: empty DB, fetching newest markets")
 
+    logger.info(
+        "collect.fetch: categories=%s limit=%s enrich_onchain=%s",
+        categories, limit, enrich_onchain,
+    )
+    fetch_t0 = time.perf_counter()
     markets = fetch_resolved_markets(
         categories=categories, limit=limit, end_date_max=end_date_max
     )
     pre_filter = len(markets)
     markets = [m for m in markets if m["created_at"] >= MIN_CREATED_AT]
     if pre_filter != len(markets):
-        print(f"Dropped {pre_filter - len(markets)} markets with created_at < {MIN_CREATED_AT.date()}")
-    print(f"Found {len(markets)} markets from API")
+        logger.info(
+            "collect.filter: dropped %d markets with created_at < %s",
+            pre_filter - len(markets), MIN_CREATED_AT.date(),
+        )
+    logger.info(
+        "collect.fetch: %d markets returned in %.2fs",
+        len(markets), time.perf_counter() - fetch_t0,
+    )
 
     new_count = 0
     skipped_count = 0
+    price_history_failures = 0
     for i, market_data in enumerate(markets):
         is_new = upsert_market(session, market_data)
         if is_new:
             new_count += 1
             session.flush()
 
-            print(f"  [{i+1}/{len(markets)}] NEW {market_data['question'][:60]}...")
+            logger.info(
+                "collect.new [%d/%d] %s %s",
+                i + 1, len(markets), market_data["id"],
+                market_data["question"][:80],
+            )
             snapshots = []
             for attempt in range(3):
                 try:
@@ -93,7 +114,11 @@ def collect(
                     if attempt < 2:
                         time.sleep(2 ** attempt)
                     else:
-                        print(f"    Skipping price history (timeout after 3 attempts)")
+                        price_history_failures += 1
+                        logger.warning(
+                            "collect.price_history timeout after 3 attempts: %s",
+                            market_data["id"],
+                        )
 
             if enrich_onchain:
                 onchain = fetch_onchain_prices(
@@ -105,17 +130,29 @@ def collect(
                 snapshots.extend(onchain)
 
             store_price_snapshots(session, snapshots, market_data["id"])
+            logger.info(
+                "collect.snapshots: %s stored %d rows",
+                market_data["id"], len(snapshots),
+            )
         else:
             skipped_count += 1
 
         if (i + 1) % 10 == 0:
             session.commit()
+            logger.info(
+                "collect.progress: %d/%d processed (new=%d skipped=%d)",
+                i + 1, len(markets), new_count, skipped_count,
+            )
 
     session.commit()
     session.close()
     engine.dispose()
 
-    print(f"Done. {new_count} new, {skipped_count} skipped (already collected).")
+    logger.info(
+        "collect.done: new=%d skipped=%d price_history_failures=%d elapsed=%.2fs",
+        new_count, skipped_count, price_history_failures,
+        time.perf_counter() - run_t0,
+    )
 
 
 def collect_new(
@@ -133,11 +170,16 @@ def collect_new(
     markets.
     """
     existing_ids = set(row[0] for row in session.query(Market.id).all())
+    logger.info(
+        "collect_new.start: %d existing markets, categories=%s",
+        len(existing_ids), categories,
+    )
 
     markets = fetch_resolved_markets(
         categories=categories, stop_if_all_known=existing_ids
     )
     markets = [m for m in markets if m["created_at"] >= MIN_CREATED_AT]
+    logger.info("collect_new.fetch: %d candidate markets after filter", len(markets))
 
     new_count = 0
     for market_data in markets:
@@ -168,8 +210,13 @@ def collect_new(
             ))
 
         store_price_snapshots(session, snapshots, market_data["id"])
+        logger.info(
+            "collect_new.new: %s stored %d snapshots",
+            market_data["id"], len(snapshots),
+        )
 
     session.commit()
+    logger.info("collect_new.done: %d new markets inserted", new_count)
     return new_count
 
 
@@ -178,7 +225,17 @@ def main():
     parser.add_argument("--categories", type=str, default="political,geopolitical", help="Comma-separated categories (default: political,geopolitical)")
     parser.add_argument("--limit", type=int, default=None, help="Max number of markets to fetch")
     parser.add_argument("--enrich-onchain", action="store_true", help="Also fetch on-chain price data from Polygon (slow)")
+    parser.add_argument(
+        "--log-file",
+        default="logs/collector.log",
+        help="Path to append run logs (default: logs/collector.log)",
+    )
     args = parser.parse_args()
+
+    from src.logging_setup import configure_logging
+
+    configure_logging(args.log_file)
+    logger.info("collector.main: starting (log_file=%s)", args.log_file)
 
     categories = args.categories.split(",") if args.categories else None
     collect(categories=categories, limit=args.limit, enrich_onchain=args.enrich_onchain)

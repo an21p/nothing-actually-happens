@@ -1,4 +1,6 @@
 import argparse
+import logging
+import time
 import uuid
 
 from sqlalchemy import exists, select
@@ -14,6 +16,8 @@ from src.backtester.selection import (
     _template_key,
 )
 from src.live.sizing import SIZING_RULES, SizingResult
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "run_backtest",
@@ -65,8 +69,17 @@ def run_backtest(
     if categories:
         query = query.where(Market.category.in_(categories))
     markets = session.execute(query).scalars().all()
+    pre_selection = len(markets)
     markets = _select_markets(markets, selection_mode)
+    logger.info(
+        "run_backtest.start label=%s run_id=%s markets=%d (pre-selection=%d) categories=%s selection=%s",
+        strategy_label, run_id, len(markets), pre_selection, categories, selection_mode,
+    )
+    run_t0 = time.perf_counter()
 
+    results_written = 0
+    skipped_no_snapshots = 0
+    skipped_no_entry = 0
     for market in markets:
         snapshots = (
             session.query(PriceSnapshot)
@@ -76,10 +89,12 @@ def run_backtest(
         )
         price_history = [{"timestamp": s.timestamp, "no_price": s.no_price} for s in snapshots]
         if not price_history:
+            skipped_no_snapshots += 1
             continue
 
         result = strategy_fn(market.created_at, price_history, **params)
         if result is None:
+            skipped_no_entry += 1
             continue
 
         entry_price, entry_timestamp = result
@@ -100,12 +115,25 @@ def run_backtest(
             size_shares=size_shares, size_notional=size_notional,
             sizing_rule=sizing_rule_label, pnl_notional=pnl_notional,
         ))
+        results_written += 1
 
     session.commit()
+    logger.info(
+        "run_backtest.done label=%s run_id=%s wrote=%d skipped(no_entry=%d no_snapshots=%d) elapsed=%.2fs",
+        strategy_label, run_id, results_written,
+        skipped_no_entry, skipped_no_snapshots,
+        time.perf_counter() - run_t0,
+    )
     return run_id
 
 
 def run_all_strategies(session: Session, categories: list[str] | None = None) -> list[str]:
+    total_combos = len(SELECTION_MODES) * sum(len(info["params"]) for info in STRATEGIES.values())
+    logger.info(
+        "run_all_strategies.start: %d combos (selection_modes=%d strategies=%d) categories=%s",
+        total_combos, len(SELECTION_MODES), len(STRATEGIES), categories,
+    )
+    sweep_t0 = time.perf_counter()
     run_ids = []
     for selection_mode in SELECTION_MODES:
         for strategy_name, info in STRATEGIES.items():
@@ -114,6 +142,10 @@ def run_all_strategies(session: Session, categories: list[str] | None = None) ->
                     session, strategy_name, params, categories, selection_mode
                 )
                 run_ids.append(run_id)
+    logger.info(
+        "run_all_strategies.done: %d runs elapsed=%.2fs",
+        len(run_ids), time.perf_counter() - sweep_t0,
+    )
     return run_ids
 
 
@@ -139,7 +171,17 @@ def main():
     parser.add_argument("--sizing-notional", type=float, default=100.0)
     parser.add_argument("--sizing-shares", type=float, default=100.0)
     parser.add_argument("--bankroll", type=float, default=1_000_000.0)
+    parser.add_argument(
+        "--log-file",
+        default="logs/backtester.log",
+        help="Path to append run logs (default: logs/backtester.log)",
+    )
     args = parser.parse_args()
+
+    from src.logging_setup import configure_logging
+
+    configure_logging(args.log_file)
+    logger.info("backtester.main: starting (log_file=%s)", args.log_file)
 
     sizing_params: dict = {}
     if args.sizing == "fixed_notional":
@@ -162,9 +204,11 @@ def main():
             sizing_rule=args.sizing, sizing_params=sizing_params,
             bankroll=args.bankroll,
         )
+        logger.info("backtester.main: complete run_id=%s", run_id)
         print(f"Backtest complete. Run ID: {run_id}")
     else:
         run_ids = run_all_strategies(session, categories)
+        logger.info("backtester.main: sweep complete runs=%d", len(run_ids))
         print(f"All backtests complete. {len(run_ids)} runs.")
 
     session.close()

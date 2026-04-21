@@ -8,6 +8,6 @@ dist/
 .venv/
 .python-version
 .claude/
-
+logs/
 # Live bot config (secrets + local tuning)
 live_config.yaml
