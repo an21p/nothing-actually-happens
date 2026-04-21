@@ -145,6 +145,7 @@ view = st.sidebar.radio(
     [
         "Thesis Overview",
         "Live Positions",
+        "Candidates",
         "Strategy Comparison",
         "Sizing Comparison",
         "Deep Dive",
@@ -812,6 +813,120 @@ def render_live_positions():
         st.plotly_chart(fig, width="stretch")
 
 
+# ---- View: Candidates ----
+
+def render_candidates():
+    from src.live.bankroll import compute_bankroll
+    from src.live.config import load_config
+    from src.live.favorites import load_favorites
+    from src.live.quotes import fetch_midpoint
+    from src.live.signals import enumerate_candidates
+    from datetime import datetime, timezone
+
+    st.header("Candidates")
+    st.caption(
+        "Open markets scored against each favorited strategy. `ready` = would fire "
+        "next tick; `watching` = threshold not hit; `waiting`/`expired` = snapshot "
+        "window; `entered` = position already exists. Read-only."
+    )
+
+    try:
+        config = load_config()
+    except FileNotFoundError:
+        st.error(
+            "live_config.yaml not found. Copy live_config.example.yaml and edit."
+        )
+        return
+
+    favs = load_favorites(session, config)
+    if not favs:
+        st.warning(
+            "No favorites active. Favourite strategies on the Strategy Comparison tab "
+            "and add matching entries to live_config.yaml."
+        )
+        return
+
+    bankrolls = {
+        f.label: compute_bankroll(session, f.label, f.starting_bankroll) for f in favs
+    }
+
+    # --- Bankroll summary ---
+    st.subheader("Bankrolls")
+    rows = []
+    for f in favs:
+        b = bankrolls[f.label]
+        rows.append({
+            "Strategy": f.label,
+            "Starting": b.starting,
+            "Locked": b.locked,
+            "Realized P&L": b.realized_pnl,
+            "Available": b.available,
+            "Open": b.open_positions,
+            "Closed": b.closed_positions,
+        })
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Starting": st.column_config.NumberColumn(format="$%.2f"),
+            "Locked": st.column_config.NumberColumn(format="$%.2f"),
+            "Realized P&L": st.column_config.NumberColumn(format="$%+.2f"),
+            "Available": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+
+    # --- Candidate tabs ---
+    st.subheader("Candidates")
+    now = datetime.now(tz=timezone.utc)
+    cands = enumerate_candidates(
+        session, favs,
+        now=now,
+        tolerance_hours=config.tolerance_hours,
+        quote_fn=fetch_midpoint,
+        bankrolls=bankrolls,
+    )
+
+    state_order = {"ready": 0, "watching": 1, "waiting": 2, "expired": 3, "entered": 4}
+
+    tabs = st.tabs([f.label for f in favs])
+    for tab, fav in zip(tabs, favs):
+        with tab:
+            fav_cands = [c for c in cands if c.favorite.label == fav.label]
+            if not fav_cands:
+                st.info("No open markets in scope.")
+                continue
+            fav_cands.sort(key=lambda c: (
+                state_order.get(c.state, 99),
+                c.quote if c.quote is not None else 99,
+                c.eta_hours if c.eta_hours is not None else 9999,
+            ))
+            rows = []
+            for c in fav_cands[:200]:
+                rows.append({
+                    "State": c.state,
+                    "Question": c.market.question,
+                    "Quote": c.quote,
+                    "Target": c.target,
+                    "ETA (h)": c.eta_hours,
+                    "Age (h)": c.age_hours,
+                    "Blocked?": "!" if c.blocked_by_bankroll else "",
+                    "URL": c.market.source_url or "",
+                })
+            st.dataframe(
+                pd.DataFrame(rows),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Quote": st.column_config.NumberColumn(format="%.4f"),
+                    "Target": st.column_config.NumberColumn(format="%.4f"),
+                    "ETA (h)": st.column_config.NumberColumn(format="%.1f"),
+                    "Age (h)": st.column_config.NumberColumn(format="%.1f"),
+                    "URL": st.column_config.LinkColumn("Link", display_text="open"),
+                },
+            )
+
+
 # ---- View: Sizing Comparison ----
 
 
@@ -1035,6 +1150,8 @@ elif view == "Market Browser":
     render_market_browser()
 elif view == "Live Positions":
     render_live_positions()
+elif view == "Candidates":
+    render_candidates()
 elif view == "Sizing Comparison":
     render_sizing_comparison()
 
